@@ -21,7 +21,7 @@
 # Settings come from three sources. Later sources override earlier ones:
 #   1. the config file (default: ~/.config/odoo-receipt/config.json),
 #   2. environment variables (ODOO_URL, ODOO_DB, ODOO_USER, ODOO_API_KEY,
-#      PRINTER_TRANSPORT, PRINTER_TARGET),
+#      PRINTER_TRANSPORT, PRINTER_TARGET, ODOO_STATE_PATH),
 #   3. command line options.
 #
 # Put the command line options before the subcommand:
@@ -232,17 +232,41 @@ def fetch_lines(client, order):
     lines.sort(key=lambda line: pos.get(line["id"], 0))
     # Custom attribute values exist on Odoo 17 and later. Read them in a
     # separate call. Older versions reject the field. Ignore that error.
-    by_id = {}
-    try:
-        extra = client.read("sale.order.line", line_ids,
-                            ["custom_product_template_attribute_value_ids"])
-        by_id = {rec["id"]: rec for rec in extra}
-    except OdooError:
-        pass
+    # No-variant attribute values are chosen on the product page but they do
+    # not create a product variant, so they are stored on the order line.
+    # Read them in a separate call too, and ignore versions without them.
+    extra_fields = []
+    for field in ("custom_product_template_attribute_value_ids",
+                  "product_custom_attribute_value_ids",
+                  "no_variant_attribute_value_ids",
+                  "product_no_variant_attribute_value_ids"):
+        try:
+            extra = client.read("sale.order.line", line_ids, [field])
+        except OdooError:
+            continue
+        extra_fields.append((field, {rec["id"]: rec for rec in extra}))
     for line in lines:
-        line["custom_values"] = (
-            by_id.get(line["id"]) or {}).get(
-                "custom_product_template_attribute_value_ids") or []
+        custom_values = []
+        no_variant_values = []
+        for field, by_id in extra_fields:
+            rec = by_id.get(line["id"]) or {}
+            if field in ("custom_product_template_attribute_value_ids",
+                         "product_custom_attribute_value_ids"):
+                # Odoo 17 and later: a one2many to records that point to
+                # the attribute value. Follow the pointer.
+                ids = rec.get(field) or []
+                if field == "product_custom_attribute_value_ids" and ids:
+                    recs = client.read("product.attribute.custom.value",
+                                       ids,
+                                       ["custom_product_template_"
+                                        "attribute_value_id"])
+                    ids = [r.get("custom_product_template_attribute_value_id")
+                           for r in recs]
+                custom_values += [i for i in ids if i]
+            else:
+                no_variant_values += rec.get(field) or []
+        line["custom_values"] = custom_values
+        line["no_variant_values"] = no_variant_values
     return lines
 
 
@@ -259,12 +283,25 @@ def fetch_variants(client, lines):
     if not ids:
         return variants, {}
     prods = client.read("product.product", ids,
-                        ["name", "product_template_attribute_value_ids"])
+                        ["name", "display_name", "product_tmpl_id",
+                         "product_template_attribute_value_ids"])
     for prod in prods:
         variants[prod["id"]] = {
             "name": prod.get("name") or prod.get("display_name") or "",
+            "template_name": "",
             "attributes": [],
         }
+    tmpl_ids = sorted({prod["product_tmpl_id"][0] for prod in prods
+                       if prod.get("product_tmpl_id")})
+    if tmpl_ids:
+        try:
+            tmpls = {t["id"]: t for t in client.read(
+                "product.template", tmpl_ids, ["name"])}
+            for prod in prods:
+                tmpl = tmpls.get(prod.get("product_tmpl_id", [0])[0]) or {}
+                variants[prod["id"]]["template_name"] = tmpl.get("name") or ""
+        except OdooError:
+            pass
     ptav_ids = sorted({pid for prod in prods
                        for pid in
                        (prod.get("product_template_attribute_value_ids")
@@ -294,9 +331,11 @@ def fetch_variants(client, lines):
             label = ("%s: %s" % (attr, value)) if attr else str(value)
             if label and label not in entry["attributes"]:
                 entry["attributes"].append(label)
-    # Fetch the custom values separately. They are not on the variant.
+    # Fetch the custom values and the no-variant values separately. They
+    # are not on the variant.
     custom_ids = sorted({pid for line in lines
-                         for pid in (line.get("custom_values") or [])})
+                         for pid in ((line.get("custom_values") or [])
+                                     + (line.get("no_variant_values") or []))})
     custom_ptav = {}
     if custom_ids:
         recs = []
@@ -311,6 +350,26 @@ def fetch_variants(client, lines):
                 recs = []
         custom_ptav = {rec["id"]: rec for rec in recs}
     return variants, custom_ptav
+
+
+def line_variant_labels(line, variants, custom_ptav):
+    """The variant labels of one order line, for the bridge UI."""
+    product = line.get("product_id")
+    variant = variants.get(product[0]) if product else None
+    labels = list((variant or {}).get("attributes") or [])
+    for pid in ((line.get("custom_values") or [])
+                + (line.get("no_variant_values") or [])):
+        rec = custom_ptav.get(pid)
+        if not rec:
+            continue
+        attr = ""
+        if isinstance(rec.get("attribute_id"), (list, tuple)):
+            attr = rec["attribute_id"][1] or ""
+        value = rec.get("custom_value") or rec.get("name") or ""
+        label = ("%s: %s" % (attr, value)) if attr else str(value)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
 
 
 def fetch_currency(client, order):
@@ -532,13 +591,16 @@ def build_receipt(order, lines, variants, custom_ptav, currency, cfg):
         product = line.get("product_id")
         if product:
             variant = variants.get(product[0]) or {}
-            name = variant.get("name") or str(product[1])
+            name = (variant.get("template_name")
+                    or variant.get("name") or str(product[1]))
             qty = format_qty(line.get("product_uom_qty") or 0)
             receipt.row("%s x %s" % (qty, name),
                         format_money(price, currency, comma))
             for label in variant.get("attributes") or []:
                 receipt.add("    " + label, hang="    ")
-            for pid in (line.get("custom_values") or []):
+            seen_labels = set(variant.get("attributes") or [])
+            for pid in ((line.get("custom_values") or [])
+                    + (line.get("no_variant_values") or [])):
                 rec = custom_ptav.get(pid)
                 if not rec:
                     continue
@@ -547,6 +609,9 @@ def build_receipt(order, lines, variants, custom_ptav, currency, cfg):
                     attr = rec["attribute_id"][1] or ""
                 value = rec.get("custom_value") or rec.get("name") or ""
                 label = ("%s: %s" % (attr, value)) if attr else str(value)
+                if label in seen_labels:
+                    continue
+                seen_labels.add(label)
                 receipt.add("    " + label, hang="    ")
             if rc.get("show_unit_price"):
                 receipt.add("    Unit price: " + format_money(
@@ -617,12 +682,15 @@ def build_internal_receipt(order, lines, variants, custom_ptav, cfg):
             receipt.add("")
         first = False
         variant = variants.get(product[0]) or {}
-        name = variant.get("name") or str(product[1])
+        name = (variant.get("template_name")
+                    or variant.get("name") or str(product[1]))
         qty = format_qty(line.get("product_uom_qty") or 0)
         receipt.add("[ ] %s x %s" % (qty, name), bold=True, hang="    ")
         for label in variant.get("attributes") or []:
             receipt.add("    " + label, hang="    ")
-        for pid in (line.get("custom_values") or []):
+        seen_labels = set(variant.get("attributes") or [])
+        for pid in ((line.get("custom_values") or [])
+                    + (line.get("no_variant_values") or [])):
             rec = custom_ptav.get(pid)
             if not rec:
                 continue
@@ -631,6 +699,9 @@ def build_internal_receipt(order, lines, variants, custom_ptav, cfg):
                 attr = rec["attribute_id"][1] or ""
             value = rec.get("custom_value") or rec.get("name") or ""
             label = ("%s: %s" % (attr, value)) if attr else str(value)
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
             receipt.add("    " + label, hang="    ")
         try:
             total_qty += float(line.get("product_uom_qty") or 0)
@@ -936,9 +1007,13 @@ class StateStore:
             if isinstance(data, dict):
                 self.data = data
                 self.data.setdefault("printed", {})
+                self.data.setdefault("printed_internal", {})
                 self.data.setdefault("watermark", None)
         except (OSError, ValueError):
             pass
+        self.data.setdefault("printed", {})
+        self.data.setdefault("printed_internal", {})
+        self.data.setdefault("watermark", None)
 
     def save(self):
         folder = os.path.dirname(self.path)
@@ -947,17 +1022,44 @@ class StateStore:
         with open(self.path, "w", encoding="utf-8") as handle:
             json.dump(self.data, handle, indent=2, sort_keys=True)
 
-    def mark_printed(self, order, advance=True):
+    def _prune(self, names):
+        if len(names) > 500:
+            keep = sorted(names.items(), key=lambda kv: kv[1])[-500:]
+            return dict(keep)
+        return names
+
+    def mark_printed(self, order, advance=True, kinds=("receipt",)):
+        """Record the prints of one order. kinds is a subset of
+        ("receipt", "internal")."""
         now = datetime.now(timezone.utc).isoformat()
-        self.data["printed"][order["name"]] = now
+        name = order["name"]
+        if "receipt" in kinds:
+            self.data["printed"][name] = now
+        if "internal" in kinds:
+            self.data["printed_internal"][name] = now
         if advance:
             watermark = self.data.get("watermark") or 0
             self.data["watermark"] = max(watermark, order["id"])
-        printed = self.data.get("printed") or {}
-        if len(printed) > 500:
-            keep = sorted(printed.items(), key=lambda kv: kv[1])[-500:]
-            self.data["printed"] = dict(keep)
+        self.data["printed"] = self._prune(self.data.get("printed") or {})
+        self.data["printed_internal"] = self._prune(
+            self.data.get("printed_internal") or {})
         self.save()
+
+    def set_printed(self, name, kind, printed):
+        """Set or clear the printed mark of one order by hand, from the
+        bridge page. kind is "receipt" or "internal"."""
+        key = "printed" if kind == "receipt" else "printed_internal"
+        names = self.data.setdefault(key, {})
+        if printed:
+            names[name] = datetime.now(timezone.utc).isoformat()
+        else:
+            names.pop(name, None)
+        self.data[key] = self._prune(names)
+        self.save()
+
+    def is_printed(self, name, kind="receipt"):
+        key = "printed" if kind == "receipt" else "printed_internal"
+        return name in (self.data.get(key) or {})
 
 
 # --------------------------------------------------------------------------
@@ -999,6 +1101,15 @@ def internal_mode(cfg):
     """Read the internal_receipts setting. One of off, add, or only."""
     mode = (cfg.get("receipt") or {}).get("internal_receipts") or "off"
     return mode if mode in ("off", "add", "only") else "off"
+
+
+def mode_kinds(mode):
+    """The print kinds that a print mode produces."""
+    if mode == "only":
+        return ("internal",)
+    if mode == "add":
+        return ("receipt", "internal")
+    return ("receipt",)
 
 
 def print_with_mode(client, cfg, printer, order, mode,
@@ -1043,7 +1154,7 @@ def poll_cycle(client, cfg, state, printer, dry_run=False):
         if order["name"] in state.data["printed"]:
             continue
         print_with_mode(client, cfg, printer, order, mode, dry_run=dry_run)
-        state.mark_printed(order, advance=True)
+        state.mark_printed(order, advance=True, kinds=mode_kinds(mode))
         print("Printed the receipt for %s" % order["name"])
         count += 1
     return count
@@ -1060,39 +1171,266 @@ BRIDGE_PAGE = """<!doctype html>
 <title>Odoo Receipt Bridge</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
- body { font-family: sans-serif; max-width: 24rem; margin: 3rem auto; }
- input { font-size: 1rem; padding: .35rem; width: 9rem; }
- button { font-size: 1rem; padding: .4rem .9rem; }
- p#status { min-height: 1.2rem; }
+ body { font-family: sans-serif; max-width: 46rem; margin: 2rem auto;
+        padding: 0 1rem; color: #222; }
+ h1 { font-size: 1.4rem; }
+ h2 { font-size: 1.1rem; margin-top: 2rem; }
+ input[type=text] { font-size: 1rem; padding: .35rem; width: 9rem; }
+ button { font-size: .95rem; padding: .4rem .9rem; cursor: pointer; }
+ table { border-collapse: collapse; width: 100%; }
+ th, td { text-align: left; padding: .45rem .6rem; border-bottom:
+          1px solid #ddd; }
+ th { border-bottom: 2px solid #999; }
+ td.num { text-align: right; }
+ td.actions { white-space: nowrap; text-align: right; }
+ td.actions button { padding: .3rem .6rem; }
+ tr.printed .name { color: #888; }
+ td.mark { cursor: pointer; user-select: none; }
+ td.mark:hover { outline: 1px dotted #999; }
+ tr.detail > td { background: #f6f6f6; }
+ tr.detail div.item { padding: .1rem 0; }
+ tr.detail div.vlabel { color: #555; font-size: .9rem; }
+ tr.detail button { padding: .2rem .5rem; font-size: .85rem; }
+ .done { color: #2a7; }
+ select { font-size: .95rem; padding: .3rem; }
+ #status { min-height: 1.2rem; }
+ #refresh { margin-left: .5rem; }
+ label.toggle { font-size: .95rem; margin-left: .8rem; }
 </style>
 </head>
 <body>
 <h1>Odoo Receipt Bridge</h1>
+<p id="status"></p>
+<h2>Recent orders</h2>
+<p>
+<button id="refresh" type="button">Refresh</button>
+<label class="toggle">Show
+<select id="limit">
+<option value="20">20</option>
+<option value="50" selected>50</option>
+<option value="100">100</option>
+<option value="200">200</option>
+</select></label>
+<label class="toggle">State
+<select id="state">
+<option value="">From config</option>
+<option value="draft">draft</option>
+<option value="sent">sent</option>
+<option value="sale">sale</option>
+<option value="done">done</option>
+<option value="cancel">cancel</option>
+</select></label>
+<label class="toggle"><input type="checkbox" id="website" checked>
+Website only</label>
+<label class="toggle">Hide
+<select id="hide">
+<option value="off">nothing</option>
+<option value="either">receipt or packing printed</option>
+<option value="both">receipt and packing printed</option>
+</select></label>
+<span id="hint">Loading orders ...</span>
+</p>
+<table id="orders">
+<thead><tr><th>Order</th><th>Date</th><th>State</th><th>Total</th>
+<th>Customer</th><th>Receipt</th><th>Packing</th><th></th></tr></thead>
+<tbody></tbody>
+</table>
+<h2>Print by reference</h2>
 <p>Type an order name or id. Then press Print.</p>
-<input id="ref" placeholder="S00042" autofocus>
+<input type="text" id="ref" placeholder="S00042">
 <label><input type="checkbox" id="internal"> Packing list</label>
 <button id="print" type="button">Print</button>
-<p id="status"></p>
 <script>
 var token = "__TOKEN__";
-document.getElementById("print").addEventListener("click", function () {
-  var status = document.getElementById("status");
-  var ref = document.getElementById("ref").value.trim();
-  if (!ref) {
-    status.textContent = "Type an order name or id first.";
-    return;
-  }
-  status.textContent = "Printing " + ref + " ...";
-  fetch("/print", {
+var statusEl = document.getElementById("status");
+var tbody = document.querySelector("#orders tbody");
+var hint = document.getElementById("hint");
+function setStatus(text) { statusEl.textContent = text; }
+function printRef(ref, internal, rowStatus) {
+  var where = rowStatus || statusEl;
+  where.textContent = "Printing " + ref + " ...";
+  return fetch("/print", {
     method: "POST",
     headers: {"Content-Type": "application/json", "X-Print-Token": token},
-    body: JSON.stringify({ref: ref,
-                          internal: document.getElementById("internal").checked})
+    body: JSON.stringify({ref: ref, internal: internal})
   }).then(function (r) { return r.json(); }).then(function (data) {
-    status.textContent = data.ok ? "Printed " + data.order + "."
-                                  : "Failed: " + data.error;
-  }).catch(function (err) { status.textContent = "Failed: " + err; });
+    where.textContent = data.ok ? "Printed " + data.order + "."
+                                : "Failed: " + data.error;
+    if (data.ok) { loadOrders(); }
+  }).catch(function (err) { where.textContent = "Failed: " + err; });
+}
+var openDetails = {};
+function toggleDetail(ref, btn, tr) {
+  if (openDetails[ref]) {
+    var old = openDetails[ref];
+    delete openDetails[ref];
+    if (old.row) { old.row.remove(); }
+    btn.textContent = "Details";
+    return;
+  }
+  var row = document.createElement("tr");
+  row.className = "detail";
+  var td = document.createElement("td");
+  td.colSpan = 8;
+  td.textContent = "Loading " + ref + " ...";
+  row.appendChild(td);
+  tr.after(row);
+  openDetails[ref] = {row: row};
+  btn.textContent = "Hide";
+  fetch("/order?ref=" + encodeURIComponent(ref),
+         {headers: {"X-Print-Token": token}})
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      td.replaceChildren();
+      if (!data.ok) {
+        td.textContent = "Failed: " + data.error;
+        return;
+      }
+      if (!data.items || !data.items.length) {
+        td.textContent = "No items on this order.";
+        return;
+      }
+      data.items.forEach(function (item) {
+        var box = document.createElement("div");
+        box.className = "item";
+        var b = document.createElement("b");
+        b.textContent = item.qty + " x " + item.product;
+        box.appendChild(b);
+        (item.variants || []).forEach(function (label) {
+          var div = document.createElement("div");
+          div.className = "vlabel";
+          div.textContent = "\u2022 " + label;
+          box.appendChild(div);
+        });
+        td.appendChild(box);
+      });
+    })
+    .catch(function (err) { td.textContent = "Failed: " + err; });
+}
+function cell(row, text, cls) {
+  var td = document.createElement("td");
+  td.textContent = text == null ? "" : text;
+  if (cls) { td.className = cls; }
+  row.appendChild(td);
+  return td;
+}
+function togglePrinted(ref, kind, now) {
+  fetch("/printed", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-Print-Token": token},
+    body: JSON.stringify({ref: ref, kind: kind, printed: !now})
+  }).then(function (r) { return r.json(); }).then(function (data) {
+    if (!data.ok) {
+      setStatus("Failed: " + data.error);
+      return;
+    }
+    loadOrders();
+  }).catch(function (err) { setStatus("Failed: " + err); });
+}
+function markCell(order, kind, printed) {
+  var td = document.createElement("td");
+  td.className = "mark";
+  td.textContent = printed ? "yes" : "no";
+  if (printed) { td.classList.add("done"); }
+  td.title = "Click to toggle";
+  td.addEventListener("click", function () {
+    togglePrinted(order.name, kind, printed);
+  });
+  return td;
+}
+function addOrder(order) {
+  var tr = document.createElement("tr");
+  var nameCell = cell(tr, order.name);
+  nameCell.className = "name";
+  cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "));
+  cell(tr, order.state);
+  cell(tr, order.amount_total == null ? "" : order.amount_total.toFixed(2),
+       "num");
+  cell(tr, order.partner_id || "");
+  tr.appendChild(markCell(order, "receipt", !!order.printed));
+  tr.appendChild(markCell(order, "internal", !!order.printed_internal));
+  var actions = document.createElement("td");
+  actions.className = "actions";
+  var msg = document.createElement("span");
+  var detailBtn = document.createElement("button");
+  detailBtn.type = "button";
+  detailBtn.textContent = "Details";
+  detailBtn.addEventListener("click", function () {
+    toggleDetail(order.name, detailBtn, detailBtn.closest("tr"));
+  });
+  var receiptBtn = document.createElement("button");
+  receiptBtn.type = "button";
+  receiptBtn.textContent = "Receipt";
+  receiptBtn.addEventListener("click", function () {
+    printRef(order.name, false, msg);
+  });
+  var packingBtn = document.createElement("button");
+  packingBtn.type = "button";
+  packingBtn.textContent = "Packing list";
+  packingBtn.addEventListener("click", function () {
+    printRef(order.name, true, msg);
+  });
+  actions.appendChild(detailBtn);
+  actions.appendChild(document.createTextNode(" "));
+  actions.appendChild(receiptBtn);
+  actions.appendChild(document.createTextNode(" "));
+  actions.appendChild(packingBtn);
+  actions.appendChild(document.createTextNode(" "));
+  actions.appendChild(msg);
+  tr.appendChild(actions);
+  tbody.appendChild(tr);
+}
+function loadOrders() {
+  hint.textContent = "Loading orders ...";
+  tbody.replaceChildren();
+  var params = new URLSearchParams();
+  params.set("limit", document.getElementById("limit").value);
+  var state = document.getElementById("state").value;
+  if (state) { params.set("state", state); }
+  if (!document.getElementById("website").checked) {
+    params.set("website", "0");
+  }
+  fetch("/orders?" + params.toString(),
+         {headers: {"X-Print-Token": token}})
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok) {
+        hint.textContent = "Failed: " + data.error;
+        return;
+      }
+      hint.textContent = "";
+      var hide = document.getElementById("hide").value;
+      var shown = 0;
+      (data.orders || []).forEach(function (order) {
+        if (hide == "either" && (order.printed || order.printed_internal)) {
+          return;
+        }
+        if (hide == "both" && order.printed && order.printed_internal) {
+          return;
+        }
+        addOrder(order);
+        shown++;
+      });
+      if (!shown) {
+        hint.textContent = "No orders to show.";
+      }
+    })
+    .catch(function (err) { hint.textContent = "Failed: " + err; });
+}
+document.getElementById("refresh").addEventListener("click", loadOrders);
+document.getElementById("limit").addEventListener("change", loadOrders);
+document.getElementById("state").addEventListener("change", loadOrders);
+document.getElementById("website").addEventListener("change", loadOrders);
+document.getElementById("hide").addEventListener("change", loadOrders);
+document.getElementById("print").addEventListener("click", function () {
+  var ref = document.getElementById("ref").value.trim();
+  if (!ref) {
+    setStatus("Type an order name or id first.");
+    return;
+  }
+  printRef(ref, document.getElementById("internal").checked, null);
 });
+loadOrders();
 </script>
 </body>
 </html>
@@ -1139,6 +1477,97 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/order":
+            if self.headers.get("X-Print-Token") != self.bridge_token:
+                self._json(403, {"ok": False,
+                                 "error": "bad or missing token"})
+                return
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            ref = str((query.get("ref") or [""])[0]).strip()
+            if not ref:
+                self._json(400, {"ok": False, "error": "no order given"})
+                return
+            try:
+                order = fetch_order(self.bridge_client, ref)
+                lines = fetch_lines(self.bridge_client, order)
+                variants, custom_ptav = fetch_variants(self.bridge_client,
+                                                      lines)
+                items = []
+                for line in lines:
+                    if line.get("display_type"):
+                        continue
+                    product = line.get("product_id")
+                    if not product:
+                        continue
+                    variant = variants.get(product[0]) or {}
+                    items.append({
+                        "name": line.get("name") or product[1],
+                        "product": (variant.get("template_name")
+                                     or variant.get("name") or product[1]),
+                        "qty": line.get("product_uom_qty") or 0,
+                        "variants": line_variant_labels(line, variants,
+                                                        custom_ptav),
+                    })
+            except (OdooError, PrinterError) as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
+            self._json(200, {"ok": True, "order": order.get("name"),
+                             "items": items})
+            return
+        if path == "/orders":
+            if self.headers.get("X-Print-Token") != self.bridge_token:
+                self._json(403, {"ok": False,
+                                 "error": "bad or missing token"})
+                return
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            states = None
+            if query.get("state"):
+                states = [s for s in query["state"][0].split(",") if s]
+            limit = 50
+            if query.get("limit"):
+                try:
+                    limit = max(1, min(int(query["limit"][0]), 500))
+                except ValueError:
+                    self._json(400, {"ok": False,
+                                     "error": "limit must be a number"})
+                    return
+            only_website = self.bridge_cfg.get("only_website")
+            if "website" in query:
+                only_website = query["website"][0] not in ("0", "false")
+            try:
+                domain = ecommerce_domain(states or
+                                          self.bridge_cfg.get("states"),
+                                          only_website)
+                orders = fetch_orders(self.bridge_client, domain, limit=limit)
+            except OdooError as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
+            if self.bridge_state is not None:
+                self.bridge_state.load()
+                printed = self.bridge_state.data.get("printed") or {}
+                printed_internal = (self.bridge_state.data.get(
+                    "printed_internal") or {})
+            else:
+                printed = {}
+                printed_internal = {}
+            self._json(200, {
+                "ok": True,
+                "orders": [{"id": o.get("id"),
+                            "name": o.get("name"),
+                            "state": o.get("state"),
+                            "date_order": o.get("date_order"),
+                            "amount_total": o.get("amount_total"),
+                            "currency": ((o.get("currency_id") or ["", ""])[1]
+                                          if o.get("currency_id") else ""),
+                            "partner_id": ((o.get("partner_id") or ["", ""])[1]
+                                            if o.get("partner_id") else ""),
+                            "printed": o.get("name") in printed,
+                            "printed_internal": (o.get("name")
+                                                  in printed_internal)}
+                           for o in orders]})
+            return
         if path == "/":
             body = self.bridge_page.encode("utf-8")
             self.send_response(200)
@@ -1153,7 +1582,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        if path != "/print":
+        if path != "/print" and path != "/printed":
             self._json(404, {"ok": False, "error": "unknown path"})
             return
         if self.headers.get("X-Print-Token") != self.bridge_token:
@@ -1165,6 +1594,23 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self.rfile.read(length).decode("utf-8") or "{}")
         except ValueError:
             self._json(400, {"ok": False, "error": "the body is not JSON"})
+            return
+        if path == "/printed":
+            ref = str(payload.get("ref") or payload.get("order") or "").strip()
+            kind = "internal" if payload.get("kind") == "internal" \
+                else "receipt"
+            printed = bool(payload.get("printed"))
+            if not ref:
+                self._json(400, {"ok": False, "error": "no order given"})
+                return
+            if self.bridge_state is None:
+                self._json(500, {"ok": False, "error": "no state store"})
+                return
+            self.bridge_state.load()
+            self.bridge_state.set_printed(ref, kind, printed)
+            self._json(200, {"ok": True, "order": ref, "kind": kind,
+                             "printed": self.bridge_state.is_printed(
+                                 ref, kind)})
             return
         ref = str(payload.get("ref") or payload.get("order") or "").strip()
         if not ref:
@@ -1178,7 +1624,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             print_with_mode(self.bridge_client, self.bridge_cfg,
                             self.bridge_printer, order, mode)
             if self.bridge_state is not None:
-                self.bridge_state.mark_printed(order, advance=False)
+                self.bridge_state.mark_printed(
+                    order, advance=False, kinds=mode_kinds(mode))
         except (OdooError, PrinterError) as exc:
             self._json(500, {"ok": False, "error": str(exc)})
             return
@@ -1242,6 +1689,8 @@ def cmd_init(cfg, args):
         print("The config file exists already: %s" % path)
         return 1
     skeleton = json.loads(json.dumps(DEFAULT_CONFIG))
+    if os.environ.get("ODOO_STATE_PATH"):
+        skeleton["state_path"] = os.environ["ODOO_STATE_PATH"]
     skeleton["url"] = "https://YOURSHOP.odoo.com"
     skeleton["db"] = "YOUR_DATABASE_NAME"
     skeleton["user"] = "you@example.com"
@@ -1365,7 +1814,7 @@ def cmd_print(cfg, args):
         # Record the print. The poll command will not print the same order
         # again. The watermark stays unchanged.
         if state is not None and not text_only:
-            state.mark_printed(order, advance=False)
+            state.mark_printed(order, advance=False, kinds=mode_kinds(mode))
     return 0
 
 
@@ -1381,9 +1830,10 @@ def cmd_poll(cfg, args):
         for order in reversed(orders):
             if order["name"] in state.data["printed"]:
                 continue
-            print_with_mode(client, cfg, printer, order, internal_mode(cfg),
+            mode = internal_mode(cfg)
+            print_with_mode(client, cfg, printer, order, mode,
                             dry_run=args.dry_run)
-            state.mark_printed(order, advance=True)
+            state.mark_printed(order, advance=True, kinds=mode_kinds(mode))
             print("Printed the receipt for %s" % order["name"])
         if args.once:
             return 0
@@ -1564,6 +2014,8 @@ def load_config(path):
         cfg["printer"]["transport"] = os.environ["PRINTER_TRANSPORT"]
     if os.environ.get("PRINTER_TARGET"):
         cfg["printer"]["target"] = os.environ["PRINTER_TARGET"]
+    if os.environ.get("ODOO_STATE_PATH"):
+        cfg["state_path"] = os.environ["ODOO_STATE_PATH"]
     return cfg
 
 

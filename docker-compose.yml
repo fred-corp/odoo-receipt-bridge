@@ -1,0 +1,16 @@
+services:
+  odoo-receipt-bridge:
+    build: .
+    image: odoo-receipt-bridge
+    restart: unless-stopped
+    volumes:
+      - ./config:/config
+      - ./state:/state
+    environment:
+      ODOO_URL: https://myshop.odoo.com
+      ODOO_DB: myshop
+      ODOO_USER: api-user@example.com
+      ODOO_API_KEY: replace-me
+      PRINTER_TRANSPORT: net
+      PRINTER_TARGET: 192.168.1.50:9100
+      ODOO_STATE_PATH: /state/state.json

@@ -50,6 +50,10 @@ The config file is at `~/.config/odoo-receipt/config.json`. Environment
 variables and command line options override it. Put the command line options
 before the subcommand: `python odoo_receipt.py --dry-run poll --once`.
 
+Environment variables: `ODOO_URL`, `ODOO_DB`, `ODOO_USER`, `ODOO_API_KEY`
+(or `ODOO_PASSWORD`), `PRINTER_TRANSPORT`, `PRINTER_TARGET`, and
+`ODOO_STATE_PATH` (the poll state file).
+
 Odoo connection:
 
 - `url`: the base URL, for example `https://myshop.odoo.com`.
@@ -111,6 +115,12 @@ Receipt:
 | `status` | Read the printer status (net and usb transports). |
 | `serve` | Run the local bridge for the button in the Odoo backend. |
 
+Bridge HTTP endpoints: `GET /` (the web interface), `GET /health`,
+`GET /orders` (the recent orders as JSON, token required), `GET /order`
+(one order's items and variant labels as JSON, token required), `POST
+/print` (print an order, token required), and `POST /printed` (set or
+clear a printed mark by hand, token required; body: `ref`, `kind`
+`receipt` or `internal`, `printed`).
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
 
@@ -141,7 +151,36 @@ Tampermonkey userscript that talks to a local bridge:
    the Odoo domain.
 
 The bridge also serves a small web page at `http://127.0.0.1:8765/` for
-printing without the userscript.
+printing without the userscript. The page lists the most recent orders,
+with a Receipt and a Packing list button next to each one, plus a Refresh
+button and a field to print by reference. The list and the print calls use
+the same token as the browser button.
+
+The list tracks the receipt and the packing list separately. Two status
+columns, Receipt and Packing, show whether each one was printed, and you
+can click a status to toggle it by hand (for example after a paper jam,
+to make the poll print the order again). The state file stores both in
+`printed` and `printed_internal`.
+
+The Hide dropdown hides orders where the receipt or the packing list was
+printed, or where both were printed.
+
+Filters for the order state and the number of orders to show, and a
+website-only toggle, work as before. After a print from the page, the
+list refreshes itself.
+
+Each row also has a Details button. It expands the row and shows the
+order items with their quantity, the variant labels (for example
+`Assembly: Kit` or `Type: Soldered`), the attribute values that do not
+create a variant, and the custom attribute values, loaded on demand so
+the list stays fast.
+
+Endpoint parameters for `GET /order?ref=NAME_OR_ID`: none. It returns the
+items with the variant labels as JSON, token required.
+
+Endpoint parameters for `GET /orders`: `state` (comma-separated order
+states, default: the states from the config), `limit` (1 to 500, default
+50), and `website=0` to include orders that do not come from the website.
 
 ## Run the poll as a service (Linux)
 
@@ -161,6 +200,90 @@ WantedBy=default.target
 
 On Windows, use Task Scheduler with the `poll` command.
 
+## Docker
+
+The repo has a `Dockerfile` and a `docker-compose.yml`, so you can self-host
+the poller as a container. The image is small: the script needs only the
+Python standard library.
+
+### Run with Docker
+
+```bash
+docker build -t odoo-receipt-bridge .
+
+docker run -d --name odoo-receipt-bridge \
+  -e ODOO_URL=https://myshop.odoo.com \
+  -e ODOO_DB=myshop \
+  -e ODOO_USER=api-user@example.com \
+  -e ODOO_API_KEY=... \
+  -e PRINTER_TRANSPORT=net \
+  -e PRINTER_TARGET=192.168.1.50:9100 \
+  -e ODOO_STATE_PATH=/data/state.json \
+  -v receipt-config:/config \
+  -v receipt-state:/data \
+  odoo-receipt-bridge poll --interval 30
+```
+
+The entrypoint always passes `--config /config/config.json`, so mount a
+volume (or a directory) on `/config` to keep the config. The default command
+is `poll --interval 30`. Any arguments after the image name replace the
+command, for example:
+
+```bash
+docker run --rm -it ...same env vars... odoo-receipt-bridge check
+docker run --rm -it ...same env vars... odoo-receipt-bridge orders
+docker run --rm -it ...same env vars... odoo-receipt-bridge print S00042 --text
+```
+
+### Run with Docker Compose
+
+Edit the environment values in `docker-compose.yml`, then:
+
+```bash
+mkdir -p config state
+docker compose up -d --build
+docker compose logs -f          # watch the poller
+docker compose run --rm odoo-receipt-bridge check
+```
+
+`config/` and `state/` are bind-mounted, so the config file and the poll
+watermark survive a rebuild. To write the initial config file with
+defaults:
+
+```bash
+docker compose run --rm odoo-receipt-bridge init
+# then edit config/config.json
+docker compose restart
+```
+
+### The bridge button in Docker
+
+To run the `serve` command for the Odoo backend button instead of the poll,
+override the command and the port mapping. Keep the bind on `0.0.0.0`
+inside the container and map the port; the token still protects the
+endpoint:
+
+```yaml
+    command: serve --bind 0.0.0.0 --port 8765
+    ports:
+      - "127.0.0.1:8765:8765"
+```
+
+Mapping `127.0.0.1:8765:8765` keeps the bridge reachable only from the host
+that runs the container, which is what the Tampermonkey button expects.
+
+### Printer notes
+
+- `net` (TCP 9100) is the natural transport in a container. The printer
+  must be reachable from the container network, which is the case for a
+  LAN printer on the default bridge network.
+- `usb` and `dev` need access to the USB or printer device; pass it with
+  `--device /dev/usb/lp0` (and `privileged: true` for raw USB), but prefer
+  `net` in Docker.
+- `cups` and `win` do not apply inside the container. Print through the
+  CUPS or Windows host with the `net` transport instead.
+- Set `receipt.timezone`, because the container runs in UTC by default.
+
 ## Notes on the Odoo API
 
 - The default `jsonrpc` backend works through Odoo 20 and on Odoo Online
@@ -170,8 +293,20 @@ On Windows, use Task Scheduler with the `poll` command.
   later. It uses the API key as a bearer token. Verify the request format
   against the Odoo documentation before you rely on it.
 - Product variants come from the order line product (`product.product`) and
-  its `product_template_attribute_value_ids` records. Custom attribute
-  values are read from the order line, when the Odoo version has the field.
+  its `product_template_attribute_value_ids` records. Attribute values
+  that do not create a variant (for example a kit/soldered option with one
+  stock item) come from the order line field
+  `no_variant_attribute_value_ids`. Custom attribute values are read from
+  the order line, when the Odoo version has the field.
+- Odoo 17 and later store the chosen non-variant attribute values on the
+  order line field `product_no_variant_attribute_value_ids`, and the
+  free-text custom values in `product_custom_attribute_value_ids` (a
+  one2many to `product.attribute.custom.value`). The tool reads both new
+  field names and the Odoo 16 names, so it works on Odoo 14 to 20 and on
+  Odoo Online.
+- Receipts and packing lists show the product template name, without the
+  variant suffix in parentheses (for example `SSD1306 128x64 OLED`). The
+  variant labels underneath the item carry that information instead.
 
 ## Project layout
 
