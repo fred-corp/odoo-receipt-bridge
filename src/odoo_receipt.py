@@ -1073,8 +1073,13 @@ BRIDGE_PAGE = """<!doctype html>
  td.num { text-align: right; }
  td.actions { white-space: nowrap; text-align: right; }
  td.actions button { padding: .3rem .6rem; }
+ tr.printed .name { color: #888; }
+ tr.printed td:first-child::after { content: " ✓"; color: #2a7; }
+ .done { color: #2a7; }
+ select { font-size: .95rem; padding: .3rem; }
  #status { min-height: 1.2rem; }
  #refresh { margin-left: .5rem; }
+ label.toggle { font-size: .95rem; margin-left: .8rem; }
 </style>
 </head>
 <body>
@@ -1083,11 +1088,29 @@ BRIDGE_PAGE = """<!doctype html>
 <h2>Recent orders</h2>
 <p>
 <button id="refresh" type="button">Refresh</button>
+<label class="toggle">Show
+<select id="limit">
+<option value="20">20</option>
+<option value="50" selected>50</option>
+<option value="100">100</option>
+<option value="200">200</option>
+</select></label>
+<label class="toggle">State
+<select id="state">
+<option value="">From config</option>
+<option value="draft">draft</option>
+<option value="sent">sent</option>
+<option value="sale">sale</option>
+<option value="done">done</option>
+<option value="cancel">cancel</option>
+</select></label>
+<label class="toggle"><input type="checkbox" id="website" checked>
+Website only</label>
 <span id="hint">Loading orders ...</span>
 </p>
 <table id="orders">
 <thead><tr><th>Order</th><th>Date</th><th>State</th><th>Total</th>
-<th>Customer</th><th></th></tr></thead>
+<th>Customer</th><th>Printed</th><th></th></tr></thead>
 <tbody></tbody>
 </table>
 <h2>Print by reference</h2>
@@ -1111,6 +1134,7 @@ function printRef(ref, internal, rowStatus) {
   }).then(function (r) { return r.json(); }).then(function (data) {
     where.textContent = data.ok ? "Printed " + data.order + "."
                                 : "Failed: " + data.error;
+    if (data.ok) { loadOrders(); }
   }).catch(function (err) { where.textContent = "Failed: " + err; });
 }
 function cell(row, text, cls) {
@@ -1122,12 +1146,16 @@ function cell(row, text, cls) {
 }
 function addOrder(order) {
   var tr = document.createElement("tr");
-  cell(tr, order.name);
+  if (order.printed) { tr.className = "printed"; }
+  var nameCell = cell(tr, order.name);
+  nameCell.className = "name";
   cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "));
   cell(tr, order.state);
   cell(tr, order.amount_total == null ? "" : order.amount_total.toFixed(2),
        "num");
   cell(tr, order.partner_id || "");
+  var printedCell = cell(tr, order.printed ? "yes" : "no");
+  printedCell.className = order.printed ? "done" : "";
   var actions = document.createElement("td");
   actions.className = "actions";
   var msg = document.createElement("span");
@@ -1154,7 +1182,15 @@ function addOrder(order) {
 function loadOrders() {
   hint.textContent = "Loading orders ...";
   tbody.replaceChildren();
-  fetch("/orders", {headers: {"X-Print-Token": token}})
+  var params = new URLSearchParams();
+  params.set("limit", document.getElementById("limit").value);
+  var state = document.getElementById("state").value;
+  if (state) { params.set("state", state); }
+  if (!document.getElementById("website").checked) {
+    params.set("website", "0");
+  }
+  fetch("/orders?" + params.toString(),
+         {headers: {"X-Print-Token": token}})
     .then(function (r) { return r.json(); })
     .then(function (data) {
       if (!data.ok) {
@@ -1170,6 +1206,9 @@ function loadOrders() {
     .catch(function (err) { hint.textContent = "Failed: " + err; });
 }
 document.getElementById("refresh").addEventListener("click", loadOrders);
+document.getElementById("limit").addEventListener("change", loadOrders);
+document.getElementById("state").addEventListener("change", loadOrders);
+document.getElementById("website").addEventListener("change", loadOrders);
 document.getElementById("print").addEventListener("click", function () {
   var ref = document.getElementById("ref").value.trim();
   if (!ref) {
@@ -1230,13 +1269,35 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self._json(403, {"ok": False,
                                  "error": "bad or missing token"})
                 return
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            states = None
+            if query.get("state"):
+                states = [s for s in query["state"][0].split(",") if s]
+            limit = 50
+            if query.get("limit"):
+                try:
+                    limit = max(1, min(int(query["limit"][0]), 500))
+                except ValueError:
+                    self._json(400, {"ok": False,
+                                     "error": "limit must be a number"})
+                    return
+            only_website = self.bridge_cfg.get("only_website")
+            if "website" in query:
+                only_website = query["website"][0] not in ("0", "false")
             try:
-                domain = ecommerce_domain(self.bridge_cfg.get("states"),
-                                          self.bridge_cfg.get("only_website"))
-                orders = fetch_orders(self.bridge_client, domain, limit=50)
+                domain = ecommerce_domain(states or
+                                          self.bridge_cfg.get("states"),
+                                          only_website)
+                orders = fetch_orders(self.bridge_client, domain, limit=limit)
             except OdooError as exc:
                 self._json(500, {"ok": False, "error": str(exc)})
                 return
+            if self.bridge_state is not None:
+                self.bridge_state.load()
+                printed = self.bridge_state.data.get("printed") or {}
+            else:
+                printed = {}
             self._json(200, {
                 "ok": True,
                 "orders": [{"id": o.get("id"),
@@ -1247,7 +1308,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                             "currency": ((o.get("currency_id") or ["", ""])[1]
                                           if o.get("currency_id") else ""),
                             "partner_id": ((o.get("partner_id") or ["", ""])[1]
-                                            if o.get("partner_id") else "")}
+                                            if o.get("partner_id") else ""),
+                            "printed": o.get("name") in printed}
                            for o in orders]})
             return
         if path == "/":

@@ -118,7 +118,6 @@ Receipt:
 Bridge HTTP endpoints: `GET /` (the web interface), `GET /health`,
 `GET /orders` (the recent orders as JSON, token required), and
 `POST /print` (print an order, token required).
-
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
 
@@ -153,6 +152,16 @@ printing without the userscript. The page lists the most recent orders,
 with a Receipt and a Packing list button next to each one, plus a Refresh
 button and a field to print by reference. The list and the print calls use
 the same token as the browser button.
+
+The list has a Printed column that shows whether the poll or a manual
+print already printed the order (a check mark also marks the order name),
+filters for the order state and the number of orders to show, and a
+website-only toggle. After a print from the page, the list refreshes
+itself.
+
+Endpoint parameters for `GET /orders`: `state` (comma-separated order
+states, default: the states from the config), `limit` (1 to 500, default
+50), and `website=0` to include orders that do not come from the website.
 
 ## Run the poll as a service (Linux)
 
