@@ -62,6 +62,7 @@ STYLE = """
  label { display: block; margin: .6rem 0 .1rem; }
  label.inline { display: inline; }
  label.toggle { display: inline; font-size: .95rem; margin-left: .8rem; }
+ label.toggle.nowrap { display: inline-block; white-space: nowrap; }
  .card { border: 1px solid var(--line); border-radius: 6px;
          padding: 1rem 1.2rem; margin: 1.5rem 0; }
  .card h2 { margin-top: 0; }
@@ -429,7 +430,7 @@ def orders_page(role):
 </select></label>
 <label class="toggle"><input type="checkbox" id="website" checked>
 Website only</label>
-<label class="toggle">Hide
+<label class="toggle nowrap">Hide
 <select id="hide">
 <option value="off">nothing</option>
 <option value="either">receipt or packing printed</option>

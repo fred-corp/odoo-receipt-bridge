@@ -152,12 +152,12 @@ class E2ETest(unittest.TestCase):
     def test_04_create_admin(self):
         status, data = self.post("/quickstart/admin",
                                  {"username": "boss",
-                                  "password": "secret123"})
+                                  "password": "test-admin-password"})
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
         status, data = self.post("/quickstart/admin",
                                  {"username": "boss",
-                                  "password": "secret123"})
+                                  "password": "test-admin-password"})
         self.assertEqual(status, 400)
 
     def test_05_quickstart_odoo_ok(self):
@@ -197,12 +197,12 @@ class E2ETest(unittest.TestCase):
     # ---- login, roles, wizard lock ---------------------------------
 
     def test_08_login_bad_credentials(self):
-        status, data, _ = self.login("boss", "wrongpass")
+        status, data, _ = self.login("boss", "test-wrong-password")
         self.assertEqual(status, 403)
         self.assertFalse(data["ok"])
 
     def test_09_login(self):
-        status, data, opener = self.login("boss", "secret123")
+        status, data, opener = self.login("boss", "test-admin-password")
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
         self.assertEqual(data["role"], "admin")
@@ -211,7 +211,7 @@ class E2ETest(unittest.TestCase):
         # log the shared opener in too: later tests use self.post()
         status, data = self.post("/login",
                                  {"username": "boss",
-                                  "password": "secret123"})
+                                  "password": "test-admin-password"})
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
 
@@ -221,24 +221,24 @@ class E2ETest(unittest.TestCase):
 
     def test_11_add_pos_user(self):
         status, data = self.post("/users/add", {"username": "cashier",
-                                                "password": "pospass12",
+                                                "password": "test-pos-password",
                                                 "role": "pos"})
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
 
     def test_12_pos_cannot_reset_setup(self):
-        _, _, opener = self.login("cashier", "pospass12")
+        _, _, opener = self.login("cashier", "test-pos-password")
         status, data = self.post("/setup/reset", {}, opener=opener)
         self.assertEqual(status, 403)
         self.assertFalse(data["ok"])
 
     def test_13_pos_cannot_read_settings(self):
-        _, _, opener = self.login("cashier", "pospass12")
+        _, _, opener = self.login("cashier", "test-pos-password")
         status, data = self.post("/settings", {}, opener=opener)
         self.assertEqual(status, 403)
 
     def test_14_pos_gets_no_settings_link(self):
-        _, _, opener = self.login("cashier", "pospass12")
+        _, _, opener = self.login("cashier", "test-pos-password")
         status, body = self.get("/", opener=opener, redirect=False)
         self.assertEqual(status, 200)
         self.assertNotIn("/settings", body)
@@ -252,18 +252,18 @@ class E2ETest(unittest.TestCase):
     def test_16_rerun_wizard_keeps_users(self):
         status, data = self.post("/quickstart/admin",
                                  {"username": "boss2",
-                                  "password": "secret456"})
+                                  "password": "test-admin2-password"})
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
-        status, data, _ = self.login("boss2", "secret456")
+        status, data, _ = self.login("boss2", "test-admin2-password")
         self.assertEqual(status, 200)
-        status, data, _ = self.login("cashier", "pospass12")
+        status, data, _ = self.login("cashier", "test-pos-password")
         self.assertEqual(status, 200)
 
     # ---- settings ----------------------------------------------------
 
     def test_17_settings_page(self):
-        status, data, opener = self.login("boss", "secret123")
+        status, data, opener = self.login("boss", "test-admin-password")
         status, body = self.get("/settings", opener=opener, redirect=False)
         self.assertEqual(status, 200)
         self.assertIn("rerun-setup", body)
@@ -271,7 +271,7 @@ class E2ETest(unittest.TestCase):
         self.assertIn("menu-btn", body)
 
     def test_18_settings_json_read(self):
-        _, _, opener = self.login("boss", "secret123")
+        _, _, opener = self.login("boss", "test-admin-password")
         status, data = self.post("/settings", {}, opener=opener)
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
@@ -281,7 +281,7 @@ class E2ETest(unittest.TestCase):
         self.assertEqual(settings["db"], "fakedb")
 
     def test_19_save_receipt_settings(self):
-        _, _, opener = self.login("boss", "secret123")
+        _, _, opener = self.login("boss", "test-admin-password")
         status, data = self.post("/settings/receipt", {
             "shop_name": "My Shop", "shop_address_lines": ["1 Main St"],
             "shop_phone": "01", "footer_lines": ["Thanks"],
@@ -307,7 +307,7 @@ class E2ETest(unittest.TestCase):
         self.assertEqual(status, 303)
 
     def test_21_orders_fetch(self):
-        _, _, opener = self.login("boss", "secret123")
+        _, _, opener = self.login("boss", "test-admin-password")
         status, body = self.get("/orders?limit=5", opener=opener,
                                 redirect=False)
         self.assertEqual(status, 200)
@@ -317,7 +317,7 @@ class E2ETest(unittest.TestCase):
         self.assertEqual(data["orders"][0]["name"], "S00042")
 
     def test_22_logout_revokes_session(self):
-        _, _, opener = self.login("boss", "secret123")
+        _, _, opener = self.login("boss", "test-admin-password")
         status, data = self.post("/logout", {}, opener=opener)
         self.assertEqual(status, 200)
         status, _ = self.get("/", opener=opener, redirect=False)
@@ -326,7 +326,7 @@ class E2ETest(unittest.TestCase):
     # ---- security ----------------------------------------------------
 
     def test_23_no_secrets_in_settings_view(self):
-        _, _, opener = self.login("boss", "secret123")
+        _, _, opener = self.login("boss", "test-admin-password")
         _, data = self.post("/settings", {}, opener=opener)
         blob = json.dumps(data)
         self.assertNotIn("fakepw", blob)
@@ -336,12 +336,12 @@ class E2ETest(unittest.TestCase):
     def test_24_user_file_has_only_hashes(self):
         users_path = os.path.join(self.tmp.name, "users.json")
         blob = open(users_path).read()
-        self.assertNotIn("secret123", blob)
-        self.assertNotIn("pospass12", blob)
+        self.assertNotIn("test-admin-password", blob)
+        self.assertNotIn("test-pos-password", blob)
         self.assertIn("pbkdf2_sha256", blob)
 
     def test_25_unknown_paths_are_404(self):
-        _, _, opener = self.login("boss", "secret123")
+        _, _, opener = self.login("boss", "test-admin-password")
         status, data = self.post("/nope", {}, opener=opener)
         self.assertEqual(status, 404)
 

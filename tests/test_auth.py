@@ -16,31 +16,31 @@ class PasswordTest(unittest.TestCase):
         auth.set_pepper("unit-test-pepper")
 
     def test_hash_has_salt_and_iterations(self):
-        record = auth.hash_password("secret123")
+        record = auth.hash_password("unit-test-password")
         self.assertEqual(record["algo"], "pbkdf2_sha256")
         self.assertEqual(record["iterations"], auth.PBKDF2_ITERATIONS)
         self.assertEqual(len(record["salt"]), 32)
         self.assertEqual(len(record["hash"]), 64)
 
     def test_salt_is_random_per_password(self):
-        self.assertNotEqual(auth.hash_password("secret123")["salt"],
-                            auth.hash_password("secret123")["salt"])
+        self.assertNotEqual(auth.hash_password("unit-test-password")["salt"],
+                            auth.hash_password("unit-test-password")["salt"])
 
     def test_verify_roundtrip(self):
-        record = auth.hash_password("secret123")
-        self.assertTrue(auth.verify_password("secret123", record))
-        self.assertFalse(auth.verify_password("secret124", record))
+        record = auth.hash_password("unit-test-password")
+        self.assertTrue(auth.verify_password("unit-test-password", record))
+        self.assertFalse(auth.verify_password("unit-test-password2", record))
         self.assertFalse(auth.verify_password("", record))
 
     def test_pepper_changes_the_hash(self):
-        record = auth.hash_password("secret123")
+        record = auth.hash_password("unit-test-password")
         auth.set_pepper("other-pepper")
-        self.assertFalse(auth.verify_password("secret123", record))
+        self.assertFalse(auth.verify_password("unit-test-password", record))
 
     def test_password_not_stored_in_plaintext(self):
-        record = auth.hash_password("secret123")
-        self.assertNotIn("secret123", str(record))
-        self.assertNotIn("secret123", str(record).encode().hex())
+        record = auth.hash_password("unit-test-password")
+        self.assertNotIn("unit-test-password", str(record))
+        self.assertNotIn("unit-test-password", str(record).encode().hex())
 
 
 class SessionTest(unittest.TestCase):
@@ -89,33 +89,33 @@ class UserStoreTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_create_and_authenticate(self):
-        self.store.create("Alice", "secret123", "admin")
-        self.assertIsNotNone(self.store.authenticate("alice", "secret123"))
-        self.assertIsNotNone(self.store.authenticate("  ALICE ", "secret123"))
+        self.store.create("Alice", "unit-test-password", "admin")
+        self.assertIsNotNone(self.store.authenticate("alice", "unit-test-password"))
+        self.assertIsNotNone(self.store.authenticate("  ALICE ", "unit-test-password"))
 
     def test_wrong_password_denied(self):
-        self.store.create("alice", "secret123", "pos")
+        self.store.create("alice", "unit-test-password", "pos")
         self.assertIsNone(self.store.authenticate("alice", "wrong"))
-        self.assertIsNone(self.store.authenticate("nobody", "secret123"))
+        self.assertIsNone(self.store.authenticate("nobody", "unit-test-password"))
 
     def test_short_password_rejected(self):
         with self.assertRaises(auth.AuthError):
             self.store.create("alice", "short", "pos")
 
     def test_duplicate_user_rejected(self):
-        self.store.create("alice", "secret123", "pos")
+        self.store.create("alice", "unit-test-password", "pos")
         with self.assertRaises(auth.AuthError):
             self.store.create("alice", "otherpass1", "pos")
 
     def test_role_change_and_delete(self):
-        self.store.create("alice", "secret123", "pos")
+        self.store.create("alice", "unit-test-password", "pos")
         self.store.set_role("alice", "admin")
         self.assertEqual(self.store.get("alice")["role"], "admin")
         self.store.delete("alice")
         self.assertIsNone(self.store.get("alice"))
 
     def test_file_permissions_are_owner_only(self):
-        self.store.create("alice", "secret123", "pos")
+        self.store.create("alice", "unit-test-password", "pos")
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
     def test_setup_complete_flag(self):
