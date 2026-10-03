@@ -116,7 +116,8 @@ Receipt:
 | `serve` | Run the local bridge for the button in the Odoo backend. |
 
 Bridge HTTP endpoints: `GET /` (the web interface), `GET /health`,
-`GET /orders` (the recent orders as JSON, token required), and
+`GET /orders` (the recent orders as JSON, token required), `GET /order`
+(one order's items and variant labels as JSON, token required), and
 `POST /print` (print an order, token required).
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
@@ -158,6 +159,14 @@ print already printed the order (a check mark also marks the order name),
 filters for the order state and the number of orders to show, and a
 website-only toggle. After a print from the page, the list refreshes
 itself.
+
+Each row also has a Details button. It expands the row and shows the
+order items with their quantity, the variant labels (for example
+`Assembly: Kit` or `Type: Soldered`), and the custom attribute values,
+loaded on demand so the list stays fast.
+
+Endpoint parameters for `GET /order?ref=NAME_OR_ID`: none. It returns the
+items with the variant labels as JSON, token required.
 
 Endpoint parameters for `GET /orders`: `state` (comma-separated order
 states, default: the states from the config), `limit` (1 to 500, default

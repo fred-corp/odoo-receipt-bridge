@@ -313,6 +313,25 @@ def fetch_variants(client, lines):
     return variants, custom_ptav
 
 
+def line_variant_labels(line, variants, custom_ptav):
+    """The variant labels of one order line, for the bridge UI."""
+    product = line.get("product_id")
+    variant = variants.get(product[0]) if product else None
+    labels = list((variant or {}).get("attributes") or [])
+    for pid in (line.get("custom_values") or []):
+        rec = custom_ptav.get(pid)
+        if not rec:
+            continue
+        attr = ""
+        if isinstance(rec.get("attribute_id"), (list, tuple)):
+            attr = rec["attribute_id"][1] or ""
+        value = rec.get("custom_value") or rec.get("name") or ""
+        label = ("%s: %s" % (attr, value)) if attr else str(value)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
 def fetch_currency(client, order):
     info = {"symbol": "", "position": "after"}
     cur = order.get("currency_id")
@@ -1075,6 +1094,10 @@ BRIDGE_PAGE = """<!doctype html>
  td.actions button { padding: .3rem .6rem; }
  tr.printed .name { color: #888; }
  tr.printed td:first-child::after { content: " ✓"; color: #2a7; }
+ tr.detail > td { background: #f6f6f6; }
+ tr.detail div.item { padding: .1rem 0; }
+ tr.detail div.vlabel { color: #555; font-size: .9rem; }
+ tr.detail button { padding: .2rem .5rem; font-size: .85rem; }
  .done { color: #2a7; }
  select { font-size: .95rem; padding: .3rem; }
  #status { min-height: 1.2rem; }
@@ -1137,6 +1160,54 @@ function printRef(ref, internal, rowStatus) {
     if (data.ok) { loadOrders(); }
   }).catch(function (err) { where.textContent = "Failed: " + err; });
 }
+var openDetails = {};
+function toggleDetail(ref, btn, tr) {
+  if (openDetails[ref]) {
+    var old = openDetails[ref];
+    delete openDetails[ref];
+    if (old.row) { old.row.remove(); }
+    btn.textContent = "Details";
+    return;
+  }
+  var row = document.createElement("tr");
+  row.className = "detail";
+  var td = document.createElement("td");
+  td.colSpan = 7;
+  td.textContent = "Loading " + ref + " ...";
+  row.appendChild(td);
+  tr.after(row);
+  openDetails[ref] = {row: row};
+  btn.textContent = "Hide";
+  fetch("/order?ref=" + encodeURIComponent(ref),
+         {headers: {"X-Print-Token": token}})
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      td.replaceChildren();
+      if (!data.ok) {
+        td.textContent = "Failed: " + data.error;
+        return;
+      }
+      if (!data.items || !data.items.length) {
+        td.textContent = "No items on this order.";
+        return;
+      }
+      data.items.forEach(function (item) {
+        var box = document.createElement("div");
+        box.className = "item";
+        var b = document.createElement("b");
+        b.textContent = item.qty + " x " + item.product;
+        box.appendChild(b);
+        (item.variants || []).forEach(function (label) {
+          var div = document.createElement("div");
+          div.className = "vlabel";
+          div.textContent = "\u2022 " + label;
+          box.appendChild(div);
+        });
+        td.appendChild(box);
+      });
+    })
+    .catch(function (err) { td.textContent = "Failed: " + err; });
+}
 function cell(row, text, cls) {
   var td = document.createElement("td");
   td.textContent = text == null ? "" : text;
@@ -1159,6 +1230,12 @@ function addOrder(order) {
   var actions = document.createElement("td");
   actions.className = "actions";
   var msg = document.createElement("span");
+  var detailBtn = document.createElement("button");
+  detailBtn.type = "button";
+  detailBtn.textContent = "Details";
+  detailBtn.addEventListener("click", function () {
+    toggleDetail(order.name, detailBtn, detailBtn.closest("tr"));
+  });
   var receiptBtn = document.createElement("button");
   receiptBtn.type = "button";
   receiptBtn.textContent = "Receipt";
@@ -1171,6 +1248,8 @@ function addOrder(order) {
   packingBtn.addEventListener("click", function () {
     printRef(order.name, true, msg);
   });
+  actions.appendChild(detailBtn);
+  actions.appendChild(document.createTextNode(" "));
   actions.appendChild(receiptBtn);
   actions.appendChild(document.createTextNode(" "));
   actions.appendChild(packingBtn);
@@ -1264,6 +1343,42 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/order":
+            if self.headers.get("X-Print-Token") != self.bridge_token:
+                self._json(403, {"ok": False,
+                                 "error": "bad or missing token"})
+                return
+            query = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            ref = str((query.get("ref") or [""])[0]).strip()
+            if not ref:
+                self._json(400, {"ok": False, "error": "no order given"})
+                return
+            try:
+                order = fetch_order(self.bridge_client, ref)
+                lines = fetch_lines(self.bridge_client, order)
+                variants, custom_ptav = fetch_variants(self.bridge_client,
+                                                      lines)
+                items = []
+                for line in lines:
+                    if line.get("display_type"):
+                        continue
+                    product = line.get("product_id")
+                    if not product:
+                        continue
+                    items.append({
+                        "name": line.get("name") or product[1],
+                        "product": product[1],
+                        "qty": line.get("product_uom_qty") or 0,
+                        "variants": line_variant_labels(line, variants,
+                                                        custom_ptav),
+                    })
+            except (OdooError, PrinterError) as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
+            self._json(200, {"ok": True, "order": order.get("name"),
+                             "items": items})
+            return
         if path == "/orders":
             if self.headers.get("X-Print-Token") != self.bridge_token:
                 self._json(403, {"ok": False,
