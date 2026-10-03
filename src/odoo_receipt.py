@@ -1447,8 +1447,16 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if self.bridge_users.is_setup_complete():
                 self._redirect("/login")
                 return
-            body = web_pages.QUICKSTART_PAGE.encode("utf-8")
-            self._html(200, body)
+            printer = self.bridge_cfg.get("printer") or {}
+            current = json.dumps({
+                "odoo": {"url": self.bridge_cfg.get("url") or "",
+                         "db": self.bridge_cfg.get("db") or "",
+                         "user": self.bridge_cfg.get("user") or ""},
+                "printer": {"transport": printer.get("transport") or "none",
+                            "target": printer.get("target") or ""},
+            }).replace("</", "<\\/")
+            body = web_pages.QUICKSTART_PAGE.replace("__CONFIG__", current)
+            self._html(200, body.encode("utf-8"))
             return
         if path == "/logout":
             self._redirect("/login")
@@ -1588,6 +1596,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self.bridge_sessions.destroy(token)
             self._json(200, {"ok": True}, set_cookie="")
             return
+        if path == "/setup/reset":
+            if not self._authorized(admin=True):
+                self._json(403, {"ok": False, "error": "admins only"})
+                return
+            self.bridge_users.clear_setup_complete()
+            self._json(200, {"ok": True})
+            return
         if path.startswith("/quickstart/"):
             self._do_quickstart(path, payload)
             return
@@ -1627,10 +1642,6 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                              "error": "the quickstart is finished"})
             return
         if path == "/quickstart/admin":
-            if not self.bridge_users.is_empty():
-                self._json(400, {"ok": False,
-                                 "error": "an admin exists already"})
-                return
             try:
                 self.bridge_users.create(payload.get("username"),
                                          payload.get("password"), "admin")

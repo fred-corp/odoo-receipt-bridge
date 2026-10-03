@@ -132,7 +132,13 @@ Roles:
 On the first start with no user file, the bridge serves a quickstart
 page: create the admin account, connect to Odoo, connect a printer
 (Autodetect scans likely LAN hosts for an ESC/POS reply on port 9100),
-or skip with "Not now" and finish later in the settings.
+or skip with "Not now" and finish later in the settings. The quickstart
+page prefills the fields with the current config file values, and an
+admin can run the wizard again any time with the red "Re-run setup
+wizard" button on the System settings page (`POST /setup/reset`). The
+web UI follows the system light/dark theme automatically, with a toggle
+button in the navigation bar to override it (kept in the browser's
+localStorage).
 
 Bridge HTTP endpoints: the pages `GET /` (orders), `GET /login`,
 `GET /quickstart`, `GET /settings` (admin), and the JSON API
@@ -141,7 +147,8 @@ Bridge HTTP endpoints: the pages `GET /` (orders), `GET /login`,
 `POST /quickstart/odoo`, `POST /quickstart/printer`,
 `POST /quickstart/detect`, `POST /settings` (read), `POST
 /settings/printer|odoo|receipt|poll`, `POST /users/add|password|role|
-delete`. The browser session is an HttpOnly cookie; the Odoo userscript
+delete`, `POST /setup/reset` (admin). The browser session is an HttpOnly
+cookie; the Odoo userscript
 keeps using the `X-Print-Token` header.
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.

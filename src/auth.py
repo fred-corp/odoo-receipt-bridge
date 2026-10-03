@@ -134,6 +134,11 @@ class UserStore:
             self.data["setup_complete"] = True
             self.save()
 
+    def clear_setup_complete(self):
+        if self.load().get("setup_complete"):
+            self.data.pop("setup_complete", None)
+            self.save()
+
     def get(self, username):
         users = self.load().get("users") or {}
         return users.get(str(username or "").strip().lower())

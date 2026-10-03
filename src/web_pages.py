@@ -6,49 +6,106 @@ __TOKEN__, __USER__ and __ROLE__ into the page before serving it.
 """
 
 STYLE = """
+ :root {
+   --bg: #fff; --fg: #222; --muted: #777; --line: #ddd; --line2: #999;
+   --soft: #f6f6f6; --detail: #555; --ok: #2a7; --err: #c22;
+   --btn: #eee; --btn-fg: #222; --btn-border: #bbb; --danger: #b22;
+ }
+ @media (prefers-color-scheme: dark) {
+   :root:not([data-theme=light]) {
+     --bg: #14161a; --fg: #e5e7ea; --muted: #9aa0a6; --line: #33373d;
+     --line2: #555a61; --soft: #1d2025; --detail: #b0b6bc; --ok: #3c9;
+     --err: #f77; --btn: #2a2e34; --btn-fg: #e5e7ea; --btn-border: #4a4f56;
+     --danger: #e55;
+   }
+ }
+ :root[data-theme=dark] {
+   --bg: #14161a; --fg: #e5e7ea; --muted: #9aa0a6; --line: #33373d;
+   --line2: #555a61; --soft: #1d2025; --detail: #b0b6bc; --ok: #3c9;
+   --err: #f77; --btn: #2a2e34; --btn-fg: #e5e7ea; --btn-border: #4a4f56;
+   --danger: #e55;
+ }
+ html { color-scheme: light dark; }
  body { font-family: sans-serif; max-width: 46rem; margin: 2rem auto;
-        padding: 0 1rem; color: #222; }
+        padding: 0 1rem; color: var(--fg); background: var(--bg); }
  h1 { font-size: 1.4rem; }
  h2 { font-size: 1.1rem; margin-top: 2rem; }
  input[type=text], input[type=password], input[type=number] {
-   font-size: 1rem; padding: .35rem; }
+   font-size: 1rem; padding: .35rem; color: var(--fg);
+   background: var(--bg); border: 1px solid var(--btn-border); }
+ textarea { font-size: 1rem; padding: .35rem; color: var(--fg);
+            background: var(--bg); border: 1px solid var(--btn-border); }
  input.wide { width: 100%; box-sizing: border-box; }
- button { font-size: .95rem; padding: .4rem .9rem; cursor: pointer; }
+ button { font-size: .95rem; padding: .4rem .9rem; cursor: pointer;
+          color: var(--btn-fg); background: var(--btn);
+          border: 1px solid var(--btn-border); border-radius: 4px; }
+ button.danger { background: var(--danger); border-color: var(--danger);
+                 color: #fff; }
  table { border-collapse: collapse; width: 100%; }
  th, td { text-align: left; padding: .45rem .6rem; border-bottom:
-          1px solid #ddd; }
- th { border-bottom: 2px solid #999; }
+          1px solid var(--line); }
+ th { border-bottom: 2px solid var(--line2); }
  td.num { text-align: right; }
  td.actions { white-space: nowrap; text-align: right; }
  td.actions button { padding: .3rem .6rem; }
- tr.printed .name { color: #888; }
+ tr.printed .name { color: var(--muted); }
  td.mark { cursor: pointer; user-select: none; }
- td.mark:hover { outline: 1px dotted #999; }
- tr.detail > td { background: #f6f6f6; }
+ td.mark:hover { outline: 1px dotted var(--line2); }
+ tr.detail > td { background: var(--soft); }
  tr.detail div.item { padding: .1rem 0; }
- tr.detail div.vlabel { color: #555; font-size: .9rem; }
+ tr.detail div.vlabel { color: var(--detail); font-size: .9rem; }
  tr.detail button { padding: .2rem .5rem; font-size: .85rem; }
- .done { color: #2a7; }
- select { font-size: .95rem; padding: .3rem; }
+ .done { color: var(--ok); }
+ select { font-size: .95rem; padding: .3rem; color: var(--fg);
+          background: var(--bg); border: 1px solid var(--btn-border); }
  #status { min-height: 1.2rem; }
  label { display: block; margin: .6rem 0 .1rem; }
  label.inline { display: inline; }
  label.toggle { display: inline; font-size: .95rem; margin-left: .8rem; }
- .card { border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.2rem;
-         margin: 1.5rem 0; }
+ .card { border: 1px solid var(--line); border-radius: 6px;
+         padding: 1rem 1.2rem; margin: 1.5rem 0; }
  .card h2 { margin-top: 0; }
- .err { color: #c22; }
- .muted { color: #777; }
+ .err { color: var(--err); }
+ .muted { color: var(--muted); }
  .nav { margin-bottom: 1.5rem; }
  .nav a { margin-right: 1.2rem; }
  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 """
 
+THEME_JS = """
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var stored = null;
+  try { stored = localStorage.getItem("theme"); } catch (e) {}
+  if (stored === "light" || stored === "dark") {
+    root.setAttribute("data-theme", stored);
+  }
+  document.addEventListener("click", function (event) {
+    var btn = event.target.closest ? event.target.closest("#theme") : null;
+    if (!btn) { return; }
+    var current = root.getAttribute("data-theme");
+    var dark = current ? current === "dark"
+      : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("theme", next); } catch (e) {}
+  });
+})();
+"""
+
+THEME_BTN = ("""<button id="theme" type="button" """
+             """title="Switch light/dark theme">&#9681;</button>""")
+
 NAV_ADMIN = ("""<a href="/">Orders</a>"""
              """<a href="/settings">System settings</a>"""
-             """<a href="#" id="logout">Log out (<span id="who"></span>)</a>""")
+             """<a href="#" id="logout">"""
+             """Log out (<span id="who"></span>)</a>"""
+             + THEME_BTN)
 NAV_POS = ("""<a href="/">Orders</a>"""
-           """<a href="#" id="logout">Log out (<span id="who"></span>)</a>""")
+           """<a href="#" id="logout">"""
+           """Log out (<span id="who"></span>)</a>"""
+           + THEME_BTN)
 
 
 def page(title, body, extra_style="", nav=""):
@@ -62,6 +119,9 @@ def page(title, body, extra_style="", nav=""):
 %(style)s
 %(extra)s
 </style>
+<script>
+%(themejs)s
+</script>
 </head>
 <body>
 %(nav)s
@@ -69,7 +129,7 @@ def page(title, body, extra_style="", nav=""):
 </body>
 </html>
 """ % {"title": title, "style": STYLE, "extra": extra_style, "nav": nav,
-        "body": body}
+        "body": body, "themejs": THEME_JS}
 
 
 LOGIN_PAGE = page(
@@ -108,7 +168,7 @@ document.getElementById("form")
   }).catch(function (err) { status.textContent = "Failed: " + err; });
 });
 </script>
-""", extra_style="#status { display: inline-block; }")
+""", extra_style="#status { display: inline-block; }", nav=THEME_BTN)
 
 
 QUICKSTART_PAGE = page(
@@ -116,9 +176,9 @@ QUICKSTART_PAGE = page(
     """
 <h1>Odoo Receipt Bridge</h1>
 <h2>Welcome</h2>
-<p>This is the first run of the bridge. Set up an administrator account,
-connect to Odoo, and connect a printer. Each step can be skipped and
-changed later in the System settings page.</p>
+<p>Set up an administrator account, connect to Odoo, and connect a
+printer. Each step can be skipped and changed later in the System
+settings page.</p>
 
 <div class="card">
 <h2>1. Create the administrator account</h2>
@@ -171,12 +231,44 @@ changed later in the System settings page.</p>
 </div>
 
 <div class="card">
-<h2>Done</h2>
-<p><button id="skip" type="button">Not now - open the login page</button></p>
+<h2>Finish</h2>
+<p>Done, or not interested right now? Log in with the account created
+above. Everything can be changed later in the System settings.</p>
+<p><button id="skip" type="button">Go to the login page</button></p>
 </div>
 
+<script id="current-config" type="application/json">__CONFIG__</script>
 <script>
 "use strict";
+var currentConfig = {};
+try {
+  currentConfig = JSON.parse(
+    document.getElementById("current-config").textContent || "{}");
+} catch (e) { currentConfig = {}; }
+if (currentConfig.odoo) {
+  if (currentConfig.odoo.url) {
+    document.getElementById("odoo-url").value = currentConfig.odoo.url;
+  }
+  if (currentConfig.odoo.db) {
+    document.getElementById("odoo-db").value = currentConfig.odoo.db;
+  }
+  if (currentConfig.odoo.user) {
+    document.getElementById("odoo-user").value = currentConfig.odoo.user;
+  }
+}
+if (currentConfig.printer) {
+  var select = document.getElementById("printer-transport");
+  for (var i = 0; i < select.options.length; i++) {
+    if (select.options[i].value === currentConfig.printer.transport) {
+      select.selectedIndex = i;
+      break;
+    }
+  }
+  if (currentConfig.printer.target) {
+    document.getElementById("printer-target").value =
+      currentConfig.printer.target;
+  }
+}
 function post(path, payload, status) {
   status.textContent = "Working ...";
   return fetch(path, {
@@ -253,7 +345,7 @@ document.getElementById("skip").addEventListener("click", function () {
   window.location.href = "/login";
 });
 </script>
-""")
+""", nav=THEME_BTN)
 
 
 def render_page_html(html, token, user, role):
@@ -635,6 +727,15 @@ Decimal comma</label>
 </div>
 
 <div class="card">
+<h2>Setup wizard</h2>
+<p>Run the first-time setup again: create a new administrator account,
+reconnect Odoo, and reconnect a printer. The current users keep working
+until the wizard is finished.</p>
+<p><button id="rerun-setup" class="danger" type="button">
+Re-run setup wizard</button></p>
+</div>
+
+<div class="card">
 <h2>Polling</h2>
 <label>Order states to print, comma separated
 <input type="text" id="poll-states" class="wide" placeholder="sale,done">
@@ -845,6 +946,14 @@ document.getElementById("save-poll").addEventListener("click", function () {
     batch: isNaN(batch) ? 50 : batch
   }).then(function (data) {
     setStatus(data.ok ? "Polling saved." : "Failed: " + data.error);
+  });
+});
+document.getElementById("rerun-setup")
+  .addEventListener("click", function () {
+  if (!window.confirm("Re-run the setup wizard? You will set up an " +
+    "administrator account again.")) { return; }
+  post("/setup/reset", {}).then(function (data) {
+    if (data.ok) { window.location.href = "/quickstart"; }
   });
 });
 loadSettings();
