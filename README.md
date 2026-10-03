@@ -117,8 +117,10 @@ Receipt:
 
 Bridge HTTP endpoints: `GET /` (the web interface), `GET /health`,
 `GET /orders` (the recent orders as JSON, token required), `GET /order`
-(one order's items and variant labels as JSON, token required), and
-`POST /print` (print an order, token required).
+(one order's items and variant labels as JSON, token required), `POST
+/print` (print an order, token required), and `POST /printed` (set or
+clear a printed mark by hand, token required; body: `ref`, `kind`
+`receipt` or `internal`, `printed`).
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
 
@@ -154,11 +156,18 @@ with a Receipt and a Packing list button next to each one, plus a Refresh
 button and a field to print by reference. The list and the print calls use
 the same token as the browser button.
 
-The list has a Printed column that shows whether the poll or a manual
-print already printed the order (a check mark also marks the order name),
-filters for the order state and the number of orders to show, and a
-website-only toggle. After a print from the page, the list refreshes
-itself.
+The list tracks the receipt and the packing list separately. Two status
+columns, Receipt and Packing, show whether each one was printed, and you
+can click a status to toggle it by hand (for example after a paper jam,
+to make the poll print the order again). The state file stores both in
+`printed` and `printed_internal`.
+
+The Hide dropdown hides orders where the receipt or the packing list was
+printed, or where both were printed.
+
+Filters for the order state and the number of orders to show, and a
+website-only toggle, work as before. After a print from the page, the
+list refreshes itself.
 
 Each row also has a Details button. It expands the row and shows the
 order items with their quantity, the variant labels (for example

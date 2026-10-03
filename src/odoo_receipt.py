@@ -1007,9 +1007,13 @@ class StateStore:
             if isinstance(data, dict):
                 self.data = data
                 self.data.setdefault("printed", {})
+                self.data.setdefault("printed_internal", {})
                 self.data.setdefault("watermark", None)
         except (OSError, ValueError):
             pass
+        self.data.setdefault("printed", {})
+        self.data.setdefault("printed_internal", {})
+        self.data.setdefault("watermark", None)
 
     def save(self):
         folder = os.path.dirname(self.path)
@@ -1018,17 +1022,44 @@ class StateStore:
         with open(self.path, "w", encoding="utf-8") as handle:
             json.dump(self.data, handle, indent=2, sort_keys=True)
 
-    def mark_printed(self, order, advance=True):
+    def _prune(self, names):
+        if len(names) > 500:
+            keep = sorted(names.items(), key=lambda kv: kv[1])[-500:]
+            return dict(keep)
+        return names
+
+    def mark_printed(self, order, advance=True, kinds=("receipt",)):
+        """Record the prints of one order. kinds is a subset of
+        ("receipt", "internal")."""
         now = datetime.now(timezone.utc).isoformat()
-        self.data["printed"][order["name"]] = now
+        name = order["name"]
+        if "receipt" in kinds:
+            self.data["printed"][name] = now
+        if "internal" in kinds:
+            self.data["printed_internal"][name] = now
         if advance:
             watermark = self.data.get("watermark") or 0
             self.data["watermark"] = max(watermark, order["id"])
-        printed = self.data.get("printed") or {}
-        if len(printed) > 500:
-            keep = sorted(printed.items(), key=lambda kv: kv[1])[-500:]
-            self.data["printed"] = dict(keep)
+        self.data["printed"] = self._prune(self.data.get("printed") or {})
+        self.data["printed_internal"] = self._prune(
+            self.data.get("printed_internal") or {})
         self.save()
+
+    def set_printed(self, name, kind, printed):
+        """Set or clear the printed mark of one order by hand, from the
+        bridge page. kind is "receipt" or "internal"."""
+        key = "printed" if kind == "receipt" else "printed_internal"
+        names = self.data.setdefault(key, {})
+        if printed:
+            names[name] = datetime.now(timezone.utc).isoformat()
+        else:
+            names.pop(name, None)
+        self.data[key] = self._prune(names)
+        self.save()
+
+    def is_printed(self, name, kind="receipt"):
+        key = "printed" if kind == "receipt" else "printed_internal"
+        return name in (self.data.get(key) or {})
 
 
 # --------------------------------------------------------------------------
@@ -1070,6 +1101,15 @@ def internal_mode(cfg):
     """Read the internal_receipts setting. One of off, add, or only."""
     mode = (cfg.get("receipt") or {}).get("internal_receipts") or "off"
     return mode if mode in ("off", "add", "only") else "off"
+
+
+def mode_kinds(mode):
+    """The print kinds that a print mode produces."""
+    if mode == "only":
+        return ("internal",)
+    if mode == "add":
+        return ("receipt", "internal")
+    return ("receipt",)
 
 
 def print_with_mode(client, cfg, printer, order, mode,
@@ -1114,7 +1154,7 @@ def poll_cycle(client, cfg, state, printer, dry_run=False):
         if order["name"] in state.data["printed"]:
             continue
         print_with_mode(client, cfg, printer, order, mode, dry_run=dry_run)
-        state.mark_printed(order, advance=True)
+        state.mark_printed(order, advance=True, kinds=mode_kinds(mode))
         print("Printed the receipt for %s" % order["name"])
         count += 1
     return count
@@ -1145,7 +1185,8 @@ BRIDGE_PAGE = """<!doctype html>
  td.actions { white-space: nowrap; text-align: right; }
  td.actions button { padding: .3rem .6rem; }
  tr.printed .name { color: #888; }
- tr.printed td:first-child::after { content: " ✓"; color: #2a7; }
+ td.mark { cursor: pointer; user-select: none; }
+ td.mark:hover { outline: 1px dotted #999; }
  tr.detail > td { background: #f6f6f6; }
  tr.detail div.item { padding: .1rem 0; }
  tr.detail div.vlabel { color: #555; font-size: .9rem; }
@@ -1181,11 +1222,17 @@ BRIDGE_PAGE = """<!doctype html>
 </select></label>
 <label class="toggle"><input type="checkbox" id="website" checked>
 Website only</label>
+<label class="toggle">Hide
+<select id="hide">
+<option value="off">nothing</option>
+<option value="either">receipt or packing printed</option>
+<option value="both">receipt and packing printed</option>
+</select></label>
 <span id="hint">Loading orders ...</span>
 </p>
 <table id="orders">
 <thead><tr><th>Order</th><th>Date</th><th>State</th><th>Total</th>
-<th>Customer</th><th>Printed</th><th></th></tr></thead>
+<th>Customer</th><th>Receipt</th><th>Packing</th><th></th></tr></thead>
 <tbody></tbody>
 </table>
 <h2>Print by reference</h2>
@@ -1224,7 +1271,7 @@ function toggleDetail(ref, btn, tr) {
   var row = document.createElement("tr");
   row.className = "detail";
   var td = document.createElement("td");
-  td.colSpan = 7;
+  td.colSpan = 8;
   td.textContent = "Loading " + ref + " ...";
   row.appendChild(td);
   tr.after(row);
@@ -1267,9 +1314,32 @@ function cell(row, text, cls) {
   row.appendChild(td);
   return td;
 }
+function togglePrinted(ref, kind, now) {
+  fetch("/printed", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-Print-Token": token},
+    body: JSON.stringify({ref: ref, kind: kind, printed: !now})
+  }).then(function (r) { return r.json(); }).then(function (data) {
+    if (!data.ok) {
+      setStatus("Failed: " + data.error);
+      return;
+    }
+    loadOrders();
+  }).catch(function (err) { setStatus("Failed: " + err); });
+}
+function markCell(order, kind, printed) {
+  var td = document.createElement("td");
+  td.className = "mark";
+  td.textContent = printed ? "yes" : "no";
+  if (printed) { td.classList.add("done"); }
+  td.title = "Click to toggle";
+  td.addEventListener("click", function () {
+    togglePrinted(order.name, kind, printed);
+  });
+  return td;
+}
 function addOrder(order) {
   var tr = document.createElement("tr");
-  if (order.printed) { tr.className = "printed"; }
   var nameCell = cell(tr, order.name);
   nameCell.className = "name";
   cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "));
@@ -1277,8 +1347,8 @@ function addOrder(order) {
   cell(tr, order.amount_total == null ? "" : order.amount_total.toFixed(2),
        "num");
   cell(tr, order.partner_id || "");
-  var printedCell = cell(tr, order.printed ? "yes" : "no");
-  printedCell.className = order.printed ? "done" : "";
+  tr.appendChild(markCell(order, "receipt", !!order.printed));
+  tr.appendChild(markCell(order, "internal", !!order.printed_internal));
   var actions = document.createElement("td");
   actions.className = "actions";
   var msg = document.createElement("span");
@@ -1329,9 +1399,20 @@ function loadOrders() {
         return;
       }
       hint.textContent = "";
-      (data.orders || []).forEach(addOrder);
-      if (!data.orders || !data.orders.length) {
-        hint.textContent = "No orders found.";
+      var hide = document.getElementById("hide").value;
+      var shown = 0;
+      (data.orders || []).forEach(function (order) {
+        if (hide == "either" && (order.printed || order.printed_internal)) {
+          return;
+        }
+        if (hide == "both" && order.printed && order.printed_internal) {
+          return;
+        }
+        addOrder(order);
+        shown++;
+      });
+      if (!shown) {
+        hint.textContent = "No orders to show.";
       }
     })
     .catch(function (err) { hint.textContent = "Failed: " + err; });
@@ -1340,6 +1421,7 @@ document.getElementById("refresh").addEventListener("click", loadOrders);
 document.getElementById("limit").addEventListener("change", loadOrders);
 document.getElementById("state").addEventListener("change", loadOrders);
 document.getElementById("website").addEventListener("change", loadOrders);
+document.getElementById("hide").addEventListener("change", loadOrders);
 document.getElementById("print").addEventListener("click", function () {
   var ref = document.getElementById("ref").value.trim();
   if (!ref) {
@@ -1465,8 +1547,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if self.bridge_state is not None:
                 self.bridge_state.load()
                 printed = self.bridge_state.data.get("printed") or {}
+                printed_internal = (self.bridge_state.data.get(
+                    "printed_internal") or {})
             else:
                 printed = {}
+                printed_internal = {}
             self._json(200, {
                 "ok": True,
                 "orders": [{"id": o.get("id"),
@@ -1478,7 +1563,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                                           if o.get("currency_id") else ""),
                             "partner_id": ((o.get("partner_id") or ["", ""])[1]
                                             if o.get("partner_id") else ""),
-                            "printed": o.get("name") in printed}
+                            "printed": o.get("name") in printed,
+                            "printed_internal": (o.get("name")
+                                                  in printed_internal)}
                            for o in orders]})
             return
         if path == "/":
@@ -1495,7 +1582,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        if path != "/print":
+        if path != "/print" and path != "/printed":
             self._json(404, {"ok": False, "error": "unknown path"})
             return
         if self.headers.get("X-Print-Token") != self.bridge_token:
@@ -1507,6 +1594,23 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 self.rfile.read(length).decode("utf-8") or "{}")
         except ValueError:
             self._json(400, {"ok": False, "error": "the body is not JSON"})
+            return
+        if path == "/printed":
+            ref = str(payload.get("ref") or payload.get("order") or "").strip()
+            kind = "internal" if payload.get("kind") == "internal" \
+                else "receipt"
+            printed = bool(payload.get("printed"))
+            if not ref:
+                self._json(400, {"ok": False, "error": "no order given"})
+                return
+            if self.bridge_state is None:
+                self._json(500, {"ok": False, "error": "no state store"})
+                return
+            self.bridge_state.load()
+            self.bridge_state.set_printed(ref, kind, printed)
+            self._json(200, {"ok": True, "order": ref, "kind": kind,
+                             "printed": self.bridge_state.is_printed(
+                                 ref, kind)})
             return
         ref = str(payload.get("ref") or payload.get("order") or "").strip()
         if not ref:
@@ -1520,7 +1624,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             print_with_mode(self.bridge_client, self.bridge_cfg,
                             self.bridge_printer, order, mode)
             if self.bridge_state is not None:
-                self.bridge_state.mark_printed(order, advance=False)
+                self.bridge_state.mark_printed(
+                    order, advance=False, kinds=mode_kinds(mode))
         except (OdooError, PrinterError) as exc:
             self._json(500, {"ok": False, "error": str(exc)})
             return
@@ -1709,7 +1814,7 @@ def cmd_print(cfg, args):
         # Record the print. The poll command will not print the same order
         # again. The watermark stays unchanged.
         if state is not None and not text_only:
-            state.mark_printed(order, advance=False)
+            state.mark_printed(order, advance=False, kinds=mode_kinds(mode))
     return 0
 
 
@@ -1725,9 +1830,10 @@ def cmd_poll(cfg, args):
         for order in reversed(orders):
             if order["name"] in state.data["printed"]:
                 continue
-            print_with_mode(client, cfg, printer, order, internal_mode(cfg),
+            mode = internal_mode(cfg)
+            print_with_mode(client, cfg, printer, order, mode,
                             dry_run=args.dry_run)
-            state.mark_printed(order, advance=True)
+            state.mark_printed(order, advance=True, kinds=mode_kinds(mode))
             print("Printed the receipt for %s" % order["name"])
         if args.once:
             return 0
