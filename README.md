@@ -115,6 +115,10 @@ Receipt:
 | `status` | Read the printer status (net and usb transports). |
 | `serve` | Run the local bridge for the button in the Odoo backend. |
 
+Bridge HTTP endpoints: `GET /` (the web interface), `GET /health`,
+`GET /orders` (the recent orders as JSON, token required), and
+`POST /print` (print an order, token required).
+
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
 
@@ -145,7 +149,10 @@ Tampermonkey userscript that talks to a local bridge:
    the Odoo domain.
 
 The bridge also serves a small web page at `http://127.0.0.1:8765/` for
-printing without the userscript.
+printing without the userscript. The page lists the most recent orders,
+with a Receipt and a Packing list button next to each one, plus a Refresh
+button and a field to print by reference. The list and the print calls use
+the same token as the browser button.
 
 ## Run the poll as a service (Linux)
 

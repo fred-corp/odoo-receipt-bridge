@@ -1060,39 +1060,125 @@ BRIDGE_PAGE = """<!doctype html>
 <title>Odoo Receipt Bridge</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
- body { font-family: sans-serif; max-width: 24rem; margin: 3rem auto; }
- input { font-size: 1rem; padding: .35rem; width: 9rem; }
- button { font-size: 1rem; padding: .4rem .9rem; }
- p#status { min-height: 1.2rem; }
+ body { font-family: sans-serif; max-width: 46rem; margin: 2rem auto;
+        padding: 0 1rem; color: #222; }
+ h1 { font-size: 1.4rem; }
+ h2 { font-size: 1.1rem; margin-top: 2rem; }
+ input[type=text] { font-size: 1rem; padding: .35rem; width: 9rem; }
+ button { font-size: .95rem; padding: .4rem .9rem; cursor: pointer; }
+ table { border-collapse: collapse; width: 100%; }
+ th, td { text-align: left; padding: .45rem .6rem; border-bottom:
+          1px solid #ddd; }
+ th { border-bottom: 2px solid #999; }
+ td.num { text-align: right; }
+ td.actions { white-space: nowrap; text-align: right; }
+ td.actions button { padding: .3rem .6rem; }
+ #status { min-height: 1.2rem; }
+ #refresh { margin-left: .5rem; }
 </style>
 </head>
 <body>
 <h1>Odoo Receipt Bridge</h1>
+<p id="status"></p>
+<h2>Recent orders</h2>
+<p>
+<button id="refresh" type="button">Refresh</button>
+<span id="hint">Loading orders ...</span>
+</p>
+<table id="orders">
+<thead><tr><th>Order</th><th>Date</th><th>State</th><th>Total</th>
+<th>Customer</th><th></th></tr></thead>
+<tbody></tbody>
+</table>
+<h2>Print by reference</h2>
 <p>Type an order name or id. Then press Print.</p>
-<input id="ref" placeholder="S00042" autofocus>
+<input type="text" id="ref" placeholder="S00042">
 <label><input type="checkbox" id="internal"> Packing list</label>
 <button id="print" type="button">Print</button>
-<p id="status"></p>
 <script>
 var token = "__TOKEN__";
-document.getElementById("print").addEventListener("click", function () {
-  var status = document.getElementById("status");
-  var ref = document.getElementById("ref").value.trim();
-  if (!ref) {
-    status.textContent = "Type an order name or id first.";
-    return;
-  }
-  status.textContent = "Printing " + ref + " ...";
-  fetch("/print", {
+var statusEl = document.getElementById("status");
+var tbody = document.querySelector("#orders tbody");
+var hint = document.getElementById("hint");
+function setStatus(text) { statusEl.textContent = text; }
+function printRef(ref, internal, rowStatus) {
+  var where = rowStatus || statusEl;
+  where.textContent = "Printing " + ref + " ...";
+  return fetch("/print", {
     method: "POST",
     headers: {"Content-Type": "application/json", "X-Print-Token": token},
-    body: JSON.stringify({ref: ref,
-                          internal: document.getElementById("internal").checked})
+    body: JSON.stringify({ref: ref, internal: internal})
   }).then(function (r) { return r.json(); }).then(function (data) {
-    status.textContent = data.ok ? "Printed " + data.order + "."
-                                  : "Failed: " + data.error;
-  }).catch(function (err) { status.textContent = "Failed: " + err; });
+    where.textContent = data.ok ? "Printed " + data.order + "."
+                                : "Failed: " + data.error;
+  }).catch(function (err) { where.textContent = "Failed: " + err; });
+}
+function cell(row, text, cls) {
+  var td = document.createElement("td");
+  td.textContent = text == null ? "" : text;
+  if (cls) { td.className = cls; }
+  row.appendChild(td);
+  return td;
+}
+function addOrder(order) {
+  var tr = document.createElement("tr");
+  cell(tr, order.name);
+  cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "));
+  cell(tr, order.state);
+  cell(tr, order.amount_total == null ? "" : order.amount_total.toFixed(2),
+       "num");
+  cell(tr, order.partner_id || "");
+  var actions = document.createElement("td");
+  actions.className = "actions";
+  var msg = document.createElement("span");
+  var receiptBtn = document.createElement("button");
+  receiptBtn.type = "button";
+  receiptBtn.textContent = "Receipt";
+  receiptBtn.addEventListener("click", function () {
+    printRef(order.name, false, msg);
+  });
+  var packingBtn = document.createElement("button");
+  packingBtn.type = "button";
+  packingBtn.textContent = "Packing list";
+  packingBtn.addEventListener("click", function () {
+    printRef(order.name, true, msg);
+  });
+  actions.appendChild(receiptBtn);
+  actions.appendChild(document.createTextNode(" "));
+  actions.appendChild(packingBtn);
+  actions.appendChild(document.createTextNode(" "));
+  actions.appendChild(msg);
+  tr.appendChild(actions);
+  tbody.appendChild(tr);
+}
+function loadOrders() {
+  hint.textContent = "Loading orders ...";
+  tbody.replaceChildren();
+  fetch("/orders", {headers: {"X-Print-Token": token}})
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok) {
+        hint.textContent = "Failed: " + data.error;
+        return;
+      }
+      hint.textContent = "";
+      (data.orders || []).forEach(addOrder);
+      if (!data.orders || !data.orders.length) {
+        hint.textContent = "No orders found.";
+      }
+    })
+    .catch(function (err) { hint.textContent = "Failed: " + err; });
+}
+document.getElementById("refresh").addEventListener("click", loadOrders);
+document.getElementById("print").addEventListener("click", function () {
+  var ref = document.getElementById("ref").value.trim();
+  if (!ref) {
+    setStatus("Type an order name or id first.");
+    return;
+  }
+  printRef(ref, document.getElementById("internal").checked, null);
 });
+loadOrders();
 </script>
 </body>
 </html>
@@ -1139,6 +1225,31 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/orders":
+            if self.headers.get("X-Print-Token") != self.bridge_token:
+                self._json(403, {"ok": False,
+                                 "error": "bad or missing token"})
+                return
+            try:
+                domain = ecommerce_domain(self.bridge_cfg.get("states"),
+                                          self.bridge_cfg.get("only_website"))
+                orders = fetch_orders(self.bridge_client, domain, limit=50)
+            except OdooError as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
+            self._json(200, {
+                "ok": True,
+                "orders": [{"id": o.get("id"),
+                            "name": o.get("name"),
+                            "state": o.get("state"),
+                            "date_order": o.get("date_order"),
+                            "amount_total": o.get("amount_total"),
+                            "currency": ((o.get("currency_id") or ["", ""])[1]
+                                          if o.get("currency_id") else ""),
+                            "partner_id": ((o.get("partner_id") or ["", ""])[1]
+                                            if o.get("partner_id") else "")}
+                           for o in orders]})
+            return
         if path == "/":
             body = self.bridge_page.encode("utf-8")
             self.send_response(200)
