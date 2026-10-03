@@ -47,6 +47,10 @@ try:
 except ImportError:
     ZoneInfo = None
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import auth
+import web_pages
+
 VERSION = "1.0.0"
 DEFAULT_CONFIG_PATH = os.path.join(
     os.path.expanduser("~"), ".config", "odoo-receipt", "config.json")
@@ -739,6 +743,9 @@ class NetPrinter:
             sock.settimeout(self.timeout)
             sock.sendall(data)
 
+    def probe(self, data=b"\x10\x04\x01", expect=4):
+        return self.query(data, expect)
+
     def query(self, data, expect=4):
         chunks = b""
         try:
@@ -1161,287 +1168,183 @@ def poll_cycle(client, cfg, state, printer, dry_run=False):
 
 
 # --------------------------------------------------------------------------
-# Local bridge for the browser button
+# Web interface: login, roles, settings, quickstart, orders
 # --------------------------------------------------------------------------
 
-BRIDGE_PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Odoo Receipt Bridge</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
- body { font-family: sans-serif; max-width: 46rem; margin: 2rem auto;
-        padding: 0 1rem; color: #222; }
- h1 { font-size: 1.4rem; }
- h2 { font-size: 1.1rem; margin-top: 2rem; }
- input[type=text] { font-size: 1rem; padding: .35rem; width: 9rem; }
- button { font-size: .95rem; padding: .4rem .9rem; cursor: pointer; }
- table { border-collapse: collapse; width: 100%; }
- th, td { text-align: left; padding: .45rem .6rem; border-bottom:
-          1px solid #ddd; }
- th { border-bottom: 2px solid #999; }
- td.num { text-align: right; }
- td.actions { white-space: nowrap; text-align: right; }
- td.actions button { padding: .3rem .6rem; }
- tr.printed .name { color: #888; }
- td.mark { cursor: pointer; user-select: none; }
- td.mark:hover { outline: 1px dotted #999; }
- tr.detail > td { background: #f6f6f6; }
- tr.detail div.item { padding: .1rem 0; }
- tr.detail div.vlabel { color: #555; font-size: .9rem; }
- tr.detail button { padding: .2rem .5rem; font-size: .85rem; }
- .done { color: #2a7; }
- select { font-size: .95rem; padding: .3rem; }
- #status { min-height: 1.2rem; }
- #refresh { margin-left: .5rem; }
- label.toggle { font-size: .95rem; margin-left: .8rem; }
-</style>
-</head>
-<body>
-<h1>Odoo Receipt Bridge</h1>
-<p id="status"></p>
-<h2>Recent orders</h2>
-<p>
-<button id="refresh" type="button">Refresh</button>
-<label class="toggle">Show
-<select id="limit">
-<option value="20">20</option>
-<option value="50" selected>50</option>
-<option value="100">100</option>
-<option value="200">200</option>
-</select></label>
-<label class="toggle">State
-<select id="state">
-<option value="">From config</option>
-<option value="draft">draft</option>
-<option value="sent">sent</option>
-<option value="sale">sale</option>
-<option value="done">done</option>
-<option value="cancel">cancel</option>
-</select></label>
-<label class="toggle"><input type="checkbox" id="website" checked>
-Website only</label>
-<label class="toggle">Hide
-<select id="hide">
-<option value="off">nothing</option>
-<option value="either">receipt or packing printed</option>
-<option value="both">receipt and packing printed</option>
-</select></label>
-<span id="hint">Loading orders ...</span>
-</p>
-<table id="orders">
-<thead><tr><th>Order</th><th>Date</th><th>State</th><th>Total</th>
-<th>Customer</th><th>Receipt</th><th>Packing</th><th></th></tr></thead>
-<tbody></tbody>
-</table>
-<h2>Print by reference</h2>
-<p>Type an order name or id. Then press Print.</p>
-<input type="text" id="ref" placeholder="S00042">
-<label><input type="checkbox" id="internal"> Packing list</label>
-<button id="print" type="button">Print</button>
-<script>
-var token = "__TOKEN__";
-var statusEl = document.getElementById("status");
-var tbody = document.querySelector("#orders tbody");
-var hint = document.getElementById("hint");
-function setStatus(text) { statusEl.textContent = text; }
-function printRef(ref, internal, rowStatus) {
-  var where = rowStatus || statusEl;
-  where.textContent = "Printing " + ref + " ...";
-  return fetch("/print", {
-    method: "POST",
-    headers: {"Content-Type": "application/json", "X-Print-Token": token},
-    body: JSON.stringify({ref: ref, internal: internal})
-  }).then(function (r) { return r.json(); }).then(function (data) {
-    where.textContent = data.ok ? "Printed " + data.order + "."
-                                : "Failed: " + data.error;
-    if (data.ok) { loadOrders(); }
-  }).catch(function (err) { where.textContent = "Failed: " + err; });
-}
-var openDetails = {};
-function toggleDetail(ref, btn, tr) {
-  if (openDetails[ref]) {
-    var old = openDetails[ref];
-    delete openDetails[ref];
-    if (old.row) { old.row.remove(); }
-    btn.textContent = "Details";
-    return;
-  }
-  var row = document.createElement("tr");
-  row.className = "detail";
-  var td = document.createElement("td");
-  td.colSpan = 8;
-  td.textContent = "Loading " + ref + " ...";
-  row.appendChild(td);
-  tr.after(row);
-  openDetails[ref] = {row: row};
-  btn.textContent = "Hide";
-  fetch("/order?ref=" + encodeURIComponent(ref),
-         {headers: {"X-Print-Token": token}})
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      td.replaceChildren();
-      if (!data.ok) {
-        td.textContent = "Failed: " + data.error;
-        return;
-      }
-      if (!data.items || !data.items.length) {
-        td.textContent = "No items on this order.";
-        return;
-      }
-      data.items.forEach(function (item) {
-        var box = document.createElement("div");
-        box.className = "item";
-        var b = document.createElement("b");
-        b.textContent = item.qty + " x " + item.product;
-        box.appendChild(b);
-        (item.variants || []).forEach(function (label) {
-          var div = document.createElement("div");
-          div.className = "vlabel";
-          div.textContent = "\u2022 " + label;
-          box.appendChild(div);
-        });
-        td.appendChild(box);
-      });
-    })
-    .catch(function (err) { td.textContent = "Failed: " + err; });
-}
-function cell(row, text, cls) {
-  var td = document.createElement("td");
-  td.textContent = text == null ? "" : text;
-  if (cls) { td.className = cls; }
-  row.appendChild(td);
-  return td;
-}
-function togglePrinted(ref, kind, now) {
-  fetch("/printed", {
-    method: "POST",
-    headers: {"Content-Type": "application/json", "X-Print-Token": token},
-    body: JSON.stringify({ref: ref, kind: kind, printed: !now})
-  }).then(function (r) { return r.json(); }).then(function (data) {
-    if (!data.ok) {
-      setStatus("Failed: " + data.error);
-      return;
-    }
-    loadOrders();
-  }).catch(function (err) { setStatus("Failed: " + err); });
-}
-function markCell(order, kind, printed) {
-  var td = document.createElement("td");
-  td.className = "mark";
-  td.textContent = printed ? "yes" : "no";
-  if (printed) { td.classList.add("done"); }
-  td.title = "Click to toggle";
-  td.addEventListener("click", function () {
-    togglePrinted(order.name, kind, printed);
-  });
-  return td;
-}
-function addOrder(order) {
-  var tr = document.createElement("tr");
-  var nameCell = cell(tr, order.name);
-  nameCell.className = "name";
-  cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "));
-  cell(tr, order.state);
-  cell(tr, order.amount_total == null ? "" : order.amount_total.toFixed(2),
-       "num");
-  cell(tr, order.partner_id || "");
-  tr.appendChild(markCell(order, "receipt", !!order.printed));
-  tr.appendChild(markCell(order, "internal", !!order.printed_internal));
-  var actions = document.createElement("td");
-  actions.className = "actions";
-  var msg = document.createElement("span");
-  var detailBtn = document.createElement("button");
-  detailBtn.type = "button";
-  detailBtn.textContent = "Details";
-  detailBtn.addEventListener("click", function () {
-    toggleDetail(order.name, detailBtn, detailBtn.closest("tr"));
-  });
-  var receiptBtn = document.createElement("button");
-  receiptBtn.type = "button";
-  receiptBtn.textContent = "Receipt";
-  receiptBtn.addEventListener("click", function () {
-    printRef(order.name, false, msg);
-  });
-  var packingBtn = document.createElement("button");
-  packingBtn.type = "button";
-  packingBtn.textContent = "Packing list";
-  packingBtn.addEventListener("click", function () {
-    printRef(order.name, true, msg);
-  });
-  actions.appendChild(detailBtn);
-  actions.appendChild(document.createTextNode(" "));
-  actions.appendChild(receiptBtn);
-  actions.appendChild(document.createTextNode(" "));
-  actions.appendChild(packingBtn);
-  actions.appendChild(document.createTextNode(" "));
-  actions.appendChild(msg);
-  tr.appendChild(actions);
-  tbody.appendChild(tr);
-}
-function loadOrders() {
-  hint.textContent = "Loading orders ...";
-  tbody.replaceChildren();
-  var params = new URLSearchParams();
-  params.set("limit", document.getElementById("limit").value);
-  var state = document.getElementById("state").value;
-  if (state) { params.set("state", state); }
-  if (!document.getElementById("website").checked) {
-    params.set("website", "0");
-  }
-  fetch("/orders?" + params.toString(),
-         {headers: {"X-Print-Token": token}})
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      if (!data.ok) {
-        hint.textContent = "Failed: " + data.error;
-        return;
-      }
-      hint.textContent = "";
-      var hide = document.getElementById("hide").value;
-      var shown = 0;
-      (data.orders || []).forEach(function (order) {
-        if (hide == "either" && (order.printed || order.printed_internal)) {
-          return;
-        }
-        if (hide == "both" && order.printed && order.printed_internal) {
-          return;
-        }
-        addOrder(order);
-        shown++;
-      });
-      if (!shown) {
-        hint.textContent = "No orders to show.";
-      }
-    })
-    .catch(function (err) { hint.textContent = "Failed: " + err; });
-}
-document.getElementById("refresh").addEventListener("click", loadOrders);
-document.getElementById("limit").addEventListener("change", loadOrders);
-document.getElementById("state").addEventListener("change", loadOrders);
-document.getElementById("website").addEventListener("change", loadOrders);
-document.getElementById("hide").addEventListener("change", loadOrders);
-document.getElementById("print").addEventListener("click", function () {
-  var ref = document.getElementById("ref").value.trim();
-  if (!ref) {
-    setStatus("Type an order name or id first.");
-    return;
-  }
-  printRef(ref, document.getElementById("internal").checked, null);
-});
-loadOrders();
-</script>
-</body>
-</html>
-"""
+def detect_printers(cfg):
+    """Find ESC/POS printers on the LAN. The net transport is checked with
+    an ESC/POS status query, so a printer replies only if it speaks the
+    protocol."""
+    found = []
+    transport = ((cfg.get("printer") or {}).get("transport") or "").lower()
+    timeout = (cfg.get("printer") or {}).get("timeout") or 5
+    hosts = set()
+    target = (cfg.get("printer") or {}).get("target") or ""
+    host = target.partition(":")[0]
+    if host:
+        hosts.add(host)
+    address = None
+    try:
+        probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe_sock.connect(("8.8.8.8", 80))
+        address = probe_sock.getsockname()[0]
+        probe_sock.close()
+    except OSError:
+        pass
+    if address:
+        network = address.rsplit(".", 1)[0]
+        hosts.add(network + ".1")
+        for last in (50, 87, 100, 107, 108, 109, 120, 168):
+            hosts.add(network + "." + str(last))
+    for name in ("printer", "receipt", "posprinter", "epson", "munbyn"):
+        try:
+            for info in socket.getaddrinfo(name, 9100):
+                hosts.add(info[4][0])
+        except socket.gaierror:
+            pass
+    for probe in hosts:
+        printer = None
+        net = None
+        try:
+            net = NetPrinter(probe, 9100, timeout)
+            reply = net.probe()
+            if reply and len(reply) >= 4:
+                printer = net
+        except PrinterError:
+            continue
+        finally:
+            if printer is None and net is not None:
+                pass
+        if printer is not None:
+            found.append({"transport": "net",
+                          "target": "%s:9100" % probe,
+                          "name": "ESC/POS on %s" % probe})
+    return found
+
+
+def save_config(cfg, path):
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(cfg, handle, indent=2)
+
+
+def test_odoo(cfg):
+    client = make_client(cfg)
+    if cfg.get("api") == "jsonrpc":
+        client._call_jsonrpc("common", "version", [])
+    uid = client.authenticate()
+    client.search_read("sale.order", [], ["name"], limit=1)
+    return uid
+
+
+def test_printer(cfg):
+    printer = open_printer(cfg)
+    try:
+        query = getattr(printer, "query", None)
+        if query:
+            printer.query(b"\x10\x04\x01", 4)
+        else:
+            printer.send(b"\n\n\n")
+    finally:
+        close = getattr(printer, "close", None)
+        if close:
+            close()
+
+
+def printer_from_settings(cfg, payload):
+    transport = str(payload.get("transport") or "none").lower()
+    target = str(payload.get("target") or "").strip()
+    try:
+        timeout = max(1, int(payload.get("timeout") or 5))
+    except (TypeError, ValueError):
+        timeout = 5
+    if transport not in ("net", "usb", "dev", "cups", "win", "none"):
+        raise OdooError("unknown transport: %r" % transport)
+    if transport in ("net", "dev", "cups", "usb", "win") and not target:
+        raise OdooError("the transport needs a target")
+    cfg["printer"] = {"transport": transport, "target": target,
+                      "timeout": timeout}
+    return cfg["printer"]
+
+
+def settings_view(cfg, users):
+    receipt = cfg.get("receipt") or {}
+    return {
+        "printer_transport": (cfg.get("printer") or {}).get("transport")
+        or "none",
+        "printer_target": (cfg.get("printer") or {}).get("target") or "",
+        "printer_timeout": (cfg.get("printer") or {}).get("timeout") or 5,
+        "url": cfg.get("url") or "",
+        "db": cfg.get("db") or "",
+        "user": cfg.get("user") or "",
+        "api": cfg.get("api") or "jsonrpc",
+        "timeout": cfg.get("timeout") or 30,
+        "shop_name": receipt.get("shop_name") or "",
+        "shop_address_lines": receipt.get("shop_address_lines") or [],
+        "shop_phone": receipt.get("shop_phone") or "",
+        "footer_lines": receipt.get("footer_lines") or [],
+        "width": receipt.get("width") or 48,
+        "left_margin": receipt.get("left_margin") or 0,
+        "timezone": receipt.get("timezone") or "",
+        "show_unit_price": bool(receipt.get("show_unit_price")),
+        "show_notes": bool(receipt.get("show_notes")),
+        "show_barcode": bool(receipt.get("show_barcode")),
+        "decimal_comma": bool(receipt.get("decimal_comma")),
+        "price_mode": receipt.get("price_mode") or "total",
+        "internal_receipts": receipt.get("internal_receipts") or "off",
+        "states": cfg.get("states") or [],
+        "only_website": bool(cfg.get("only_website")),
+        "batch": cfg.get("batch") or 50,
+    }, users
+
+
+def apply_odoo_settings(cfg, payload):
+    for key in ("url", "db", "user", "api_key"):
+        if key in payload:
+            cfg[key] = str(payload.get(key) or "").strip()
+    cfg["url"] = (cfg.get("url") or "").rstrip("/")
+    if payload.get("api") in ("jsonrpc", "json2"):
+        cfg["api"] = payload["api"]
+    try:
+        timeout = int(payload.get("timeout") or 0)
+    except (TypeError, ValueError):
+        timeout = 0
+    if timeout > 0:
+        cfg["timeout"] = timeout
+
+
+def apply_receipt_settings(cfg, payload):
+    receipt = cfg.setdefault("receipt", {})
+    for key in ("shop_name", "shop_phone", "timezone", "price_mode",
+                "internal_receipts"):
+        if key in payload:
+            receipt[key] = str(payload.get(key) or "")
+    for key in ("shop_address_lines", "footer_lines"):
+        if key in payload:
+            value = payload.get(key)
+            if not isinstance(value, list):
+                raise OdooError("%s must be a list of lines" % key)
+            receipt[key] = [str(line) for line in value]
+    for key in ("width", "left_margin"):
+        if key in payload:
+            try:
+                receipt[key] = int(payload.get(key))
+            except (TypeError, ValueError):
+                raise OdooError("%s must be a number" % key)
+    for key in ("show_unit_price", "show_notes", "show_barcode",
+                "decimal_comma"):
+        if key in payload:
+            receipt[key] = bool(payload.get(key))
 
 
 class BridgeHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP handler for the local bridge.
+    """HTTP handler for the bridge web interface and the print API.
 
-    The browser button or the bridge page sends the order reference. The
-    bridge fetches the order from Odoo and prints the receipt.
+    Sessions are cookie based. POS users can list orders and print.
+    Admin users can also change the settings and manage the users. The
+    old X-Print-Token header still works for the Odoo browser button.
     """
 
     server_version = "odoo_receipt/" + VERSION
@@ -1450,7 +1353,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     bridge_printer = None
     bridge_state = None
     bridge_token = ""
-    bridge_page = ""
+    bridge_users = None
+    bridge_sessions = None
+    bridge_config_path = ""
 
     def log_message(self, fmt, *log_args):
         print("[bridge] " + (fmt % log_args))
@@ -1461,11 +1366,33 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers",
                          "Content-Type, X-Print-Token")
 
-    def _json(self, code, payload):
+    def _json(self, code, payload, set_cookie=None):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        if set_cookie == "":
+            self.send_header("Set-Cookie",
+                             "bridge_session=; Max-Age=0; HttpOnly")
+        elif set_cookie:
+            self.send_header("Set-Cookie", set_cookie)
         self._cors()
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _html(self, code, body, headers=None):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _redirect(self, location):
+        body = b""
+        self.send_response(303)
+        self.send_header("Location", location)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1475,12 +1402,78 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+    def _session(self):
+        cookie = self.headers.get("Cookie") or ""
+        token = ""
+        for part in cookie.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == "bridge_session":
+                token = value
+        return self.bridge_sessions.get(token), token
+
+    def _authorized(self, admin=False):
+        if self.headers.get("X-Print-Token") == self.bridge_token:
+            return {"username": "button", "role": "admin"}
+        session, _ = self._session()
+        if session and (not admin or session["role"] == "admin"):
+            return session
+        return None
+
+    def _body(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(
+                self.rfile.read(length).decode("utf-8") or "{}")
+        except ValueError:
+            return None
+        return payload
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/health":
+            self._json(200, {"ok": True, "version": VERSION})
+            return
+        if (self.bridge_users.is_empty()
+                and not self.bridge_users.is_setup_complete()
+                and path != "/quickstart"):
+            self._redirect("/quickstart")
+            return
+        if path == "/login":
+            session, _ = self._session()
+            body = web_pages.LOGIN_PAGE.encode("utf-8")
+            self._html(200, body)
+            return
+        if path == "/quickstart":
+            if self.bridge_users.is_setup_complete():
+                self._redirect("/login")
+                return
+            body = web_pages.QUICKSTART_PAGE.encode("utf-8")
+            self._html(200, body)
+            return
+        if path == "/logout":
+            self._redirect("/login")
+            return
+        session, _ = self._session()
+        if (not session and path in ("/order", "/orders")
+                and self.headers.get("X-Print-Token")
+                == self.bridge_token):
+            session = {"username": "button", "role": "admin"}
+        if not session:
+            self._redirect("/login")
+            return
+        if path == "/":
+            if not self.bridge_client:
+                self._json(503, {"ok": False, "error": "no Odoo config"})
+                return
+            html = web_pages.render_page_html(
+                web_pages.orders_page(session["role"]),
+                self.bridge_token, session["username"], session["role"])
+            self._html(200, html.encode("utf-8"))
+            return
         if path == "/order":
-            if self.headers.get("X-Print-Token") != self.bridge_token:
+            if not self._authorized():
                 self._json(403, {"ok": False,
-                                 "error": "bad or missing token"})
+                                 "error": "log in first"})
                 return
             query = urllib.parse.parse_qs(
                 urllib.parse.urlparse(self.path).query)
@@ -1516,9 +1509,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                              "items": items})
             return
         if path == "/orders":
-            if self.headers.get("X-Print-Token") != self.bridge_token:
+            if not self._authorized():
                 self._json(403, {"ok": False,
-                                 "error": "bad or missing token"})
+                                 "error": "log in first"})
                 return
             query = urllib.parse.parse_qs(
                 urllib.parse.urlparse(self.path).query)
@@ -1568,32 +1561,222 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                                                   in printed_internal)}
                            for o in orders]})
             return
-        if path == "/":
-            body = self.bridge_page.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif path == "/health":
-            self._json(200, {"ok": True, "version": VERSION})
-        else:
-            self._json(404, {"ok": False, "error": "unknown path"})
+        if path == "/settings":
+            if session["role"] != "admin":
+                self._json(403, {"ok": False,
+                                 "error": "admins only"})
+                return
+            html = web_pages.render_page_html(
+                web_pages.SETTINGS_PAGE, self.bridge_token,
+                session["username"], session["role"])
+            self._html(200, html.encode("utf-8"))
+            return
+        self._json(404, {"ok": False, "error": "unknown path"})
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
-        if path != "/print" and path != "/printed":
-            self._json(404, {"ok": False, "error": "unknown path"})
+        payload = self._body()
+        if payload is None:
+            self._json(400, {"ok": False, "error": "the body is not JSON"})
             return
-        if self.headers.get("X-Print-Token") != self.bridge_token:
-            self._json(403, {"ok": False, "error": "bad or missing token"})
+        if path == "/login":
+            self._do_login(payload)
+            return
+        if path == "/logout":
+            session, token = self._session()
+            if session:
+                self.bridge_sessions.destroy(token)
+            self._json(200, {"ok": True}, set_cookie="")
+            return
+        if path.startswith("/quickstart/"):
+            self._do_quickstart(path, payload)
+            return
+        if path.startswith("/users/"):
+            self._do_users(path, payload)
+            return
+        if path == "/settings" or path.startswith("/settings/"):
+            self._do_settings(path, payload)
+            return
+        if path in ("/print", "/printed"):
+            self._do_print(path, payload)
+            return
+        self._json(404, {"ok": False, "error": "unknown path"})
+
+    def _do_login(self, payload):
+        if self.bridge_users.is_empty():
+            self._json(403, {"ok": False,
+                             "error": "run the quickstart first"})
+            return
+        account = self.bridge_users.authenticate(payload.get("username"),
+                                                  payload.get("password"))
+        if not account:
+            self._json(403, {"ok": False,
+                             "error": "wrong username or password"})
+            return
+        token = self.bridge_sessions.create(account["username"],
+                                             account["role"])
+        self.bridge_users.mark_setup_complete()
+        cookie = ("bridge_session=%s; Path=/; HttpOnly; SameSite=Lax"
+                  % token)
+        self._json(200, {"ok": True, "username": account["username"],
+                         "role": account["role"]}, set_cookie=cookie)
+
+    def _do_quickstart(self, path, payload):
+        if self.bridge_users.is_setup_complete():
+            self._json(403, {"ok": False,
+                             "error": "the quickstart is finished"})
+            return
+        if path == "/quickstart/admin":
+            if not self.bridge_users.is_empty():
+                self._json(400, {"ok": False,
+                                 "error": "an admin exists already"})
+                return
+            try:
+                self.bridge_users.create(payload.get("username"),
+                                         payload.get("password"), "admin")
+            except auth.AuthError as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
+            self._json(200, {"ok": True,
+                             "note": "Administrator created. Test Odoo "
+                                     "and the printer below, or log in."})
+            return
+        if path == "/quickstart/odoo":
+            apply_odoo_settings(self.bridge_cfg, payload)
+            save_config(self.bridge_cfg, self.bridge_config_path)
+            note = "Saved."
+            try:
+                uid = test_odoo(self.bridge_cfg)
+                note = "Saved. Odoo login OK, user id %s." % uid
+                BridgeHandler.bridge_client = make_client(self.bridge_cfg)
+            except (OdooError, PrinterError) as exc:
+                note = "Saved, but the connection failed: %s" % exc
+            self._json(200, {"ok": True, "note": note})
+            return
+        if path == "/quickstart/printer":
+            try:
+                printer_from_settings(self.bridge_cfg, payload)
+            except (OdooError, PrinterError) as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
+            save_config(self.bridge_cfg, self.bridge_config_path)
+            note = "Saved."
+            try:
+                test_printer(self.bridge_cfg)
+                note = "Saved. The printer answered."
+                BridgeHandler.bridge_printer = open_printer(self.bridge_cfg)
+            except (OdooError, PrinterError) as exc:
+                note = "Saved, but the printer test failed: %s" % exc
+            self._json(200, {"ok": True, "note": note})
+            return
+        if path == "/quickstart/detect":
+            printers = detect_printers(self.bridge_cfg)
+            self._json(200, {"ok": True, "printers": printers})
+            return
+        self._json(404, {"ok": False, "error": "unknown path"})
+
+    def _do_users(self, path, payload):
+        if not self._authorized(admin=True):
+            self._json(403, {"ok": False, "error": "admins only"})
             return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            payload = json.loads(
-                self.rfile.read(length).decode("utf-8") or "{}")
-        except ValueError:
-            self._json(400, {"ok": False, "error": "the body is not JSON"})
+            if path == "/users/add":
+                self.bridge_users.create(payload.get("username"),
+                                         payload.get("password"),
+                                         payload.get("role") or "pos")
+            elif path == "/users/password":
+                self.bridge_users.set_password(payload.get("username"),
+                                               payload.get("password"))
+            elif path == "/users/role":
+                self.bridge_users.set_role(payload.get("username"),
+                                           payload.get("role"))
+            elif path == "/users/delete":
+                username = str(payload.get("username") or "").strip().lower()
+                session, _ = self._session()
+                if session and session["username"] == username:
+                    raise auth.AuthError("you cannot delete your own "
+                                         "account")
+                self.bridge_users.delete(username)
+            else:
+                self._json(404, {"ok": False, "error": "unknown path"})
+                return
+        except auth.AuthError as exc:
+            self._json(400, {"ok": False, "error": str(exc)})
+            return
+        self._json(200, {"ok": True, "users": self.bridge_users.list()})
+
+    def _do_settings(self, path, payload):
+        if path == "/settings":
+            if not self._authorized(admin=True):
+                self._json(403, {"ok": False, "error": "admins only"})
+                return
+            cfg = load_config(self.bridge_config_path)
+            settings, users = settings_view(cfg,
+                                           self.bridge_users.list())
+            self._json(200, {"ok": True, "settings": settings,
+                             "users": users})
+            return
+        if not self._authorized(admin=True):
+            self._json(403, {"ok": False, "error": "admins only"})
+            return
+        cfg = load_config(self.bridge_config_path)
+        apply_overrides(cfg, argparse.Namespace(**{
+            "url": None, "db": None, "user": None, "api_key": None,
+            "api": None, "transport": None, "target": None,
+            "width": None, "margin": None}))
+        if path == "/settings/printer":
+            try:
+                printer_from_settings(cfg, payload)
+            except (OdooError, PrinterError) as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
+        elif path == "/settings/odoo":
+            apply_odoo_settings(cfg, payload)
+        elif path == "/settings/receipt":
+            try:
+                apply_receipt_settings(cfg, payload)
+            except OdooError as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
+        elif path == "/settings/poll":
+            states = str(payload.get("states") or "").strip()
+            if states:
+                cfg["states"] = [s for s in states.split(",") if s.strip()]
+            cfg["only_website"] = bool(payload.get("only_website"))
+            try:
+                cfg["batch"] = max(1, min(int(payload.get("batch") or 50),
+                                          500))
+            except (TypeError, ValueError):
+                cfg["batch"] = 50
+        else:
+            self._json(404, {"ok": False, "error": "unknown path"})
+            return
+        save_config(cfg, self.bridge_config_path)
+        BridgeHandler.bridge_cfg = cfg
+        if path == "/settings/printer":
+            try:
+                BridgeHandler.bridge_printer = open_printer(cfg)
+            except (OdooError, PrinterError):
+                BridgeHandler.bridge_printer = None
+        elif path == "/settings/odoo":
+            BridgeHandler.bridge_client = (make_client(cfg)
+                                           if cfg.get("url") else None)
+        note = "Saved."
+        if path in ("/settings/printer", "/settings/odoo"):
+            try:
+                if path == "/settings/printer":
+                    test_printer(cfg)
+                else:
+                    uid = test_odoo(cfg)
+                    note = "Saved. Odoo login OK, user id %s." % uid
+            except (OdooError, PrinterError) as exc:
+                note = "Saved, but the test failed: %s" % exc
+        self._json(200, {"ok": True, "note": note})
+
+    def _do_print(self, path, payload):
+        if not self._authorized():
+            self._json(403, {"ok": False,
+                             "error": "bad or missing token"})
             return
         if path == "/printed":
             ref = str(payload.get("ref") or payload.get("order") or "").strip()
@@ -1616,6 +1799,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if not ref:
             self._json(400, {"ok": False, "error": "no order given"})
             return
+        if not self.bridge_printer:
+            self._json(500, {"ok": False, "error": "no printer configured"})
+            return
         try:
             order = fetch_order(self.bridge_client, ref)
             mode = internal_mode(self.bridge_cfg)
@@ -1633,32 +1819,34 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
 
 def cmd_serve(cfg, args):
-    """Run the local HTTP bridge for the button in the Odoo web client.
-
-    A browser userscript inside Odoo sends the order reference to this
-    bridge. The bridge listens on 127.0.0.1 only. A token in the request
-    header stops other websites from triggering prints.
-    """
+    """Run the HTTP bridge: a web interface with login, the orders page,
+    the admin settings page, and the print API for the Odoo button."""
     bridge = cfg.get("bridge") or {}
     token = str(bridge.get("token") or "").strip()
     if not token:
-        # Write a token to the config file. The token stays the same
-        # across restarts, so the browser button needs no update.
         token = secrets.token_hex(16)
-        cfg.setdefault("bridge", {})
-        cfg["bridge"]["token"] = token
-        folder = os.path.dirname(args.config)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
-        with open(args.config, "w", encoding="utf-8") as handle:
-            json.dump(cfg, handle, indent=2)
+        cfg.setdefault("bridge", {})["token"] = token
+        save_config(cfg, args.config)
         print("The bridge token was written to the config file.")
-    BridgeHandler.bridge_client = make_client(cfg)
+    folder = os.path.dirname(args.config)
+    auth.set_pepper(auth.load_or_create_pepper(folder))
+    users_path = os.environ.get("ODOO_USERS_PATH") or os.path.join(
+        os.path.dirname(args.config) or ".",
+        "users.json")
+    users = auth.UserStore(users_path)
+    sessions = auth.SessionStore()
+    BridgeHandler.bridge_users = users
+    BridgeHandler.bridge_sessions = sessions
     BridgeHandler.bridge_cfg = cfg
-    BridgeHandler.bridge_printer = open_printer(cfg)
+    BridgeHandler.bridge_config_path = args.config
+    BridgeHandler.bridge_client = make_client(cfg) if cfg.get("url") else None
+    BridgeHandler.bridge_printer = None
+    try:
+        BridgeHandler.bridge_printer = open_printer(cfg)
+    except PrinterError:
+        pass
     BridgeHandler.bridge_state = StateStore(cfg["state_path"])
     BridgeHandler.bridge_token = token
-    BridgeHandler.bridge_page = BRIDGE_PAGE.replace("__TOKEN__", token)
     port = args.port or bridge.get("port") or 8765
     bind = args.bind or bridge.get("bind") or "127.0.0.1"
     try:
@@ -1668,8 +1856,11 @@ def cmd_serve(cfg, args):
         raise PrinterError("cannot bind %s:%s: %s" % (bind, port, exc))
     print("The bridge listens on http://%s:%s" %
           (bind, httpd.server_address[1]))
+    if users.is_empty():
+        print("First run: open the quickstart page to create an admin "
+              "account.")
     print("Bridge token: %s" % token)
-    print("Open http://%s:%s/ to print without the browser button." %
+    print("Open http://%s:%s/ in the browser." %
           (bind, httpd.server_address[1]))
     print("Press Ctrl+C to stop.")
     try:
@@ -1677,7 +1868,6 @@ def cmd_serve(cfg, args):
     except KeyboardInterrupt:
         print("Stopped.")
     return 0
-
 
 # --------------------------------------------------------------------------
 # Commands

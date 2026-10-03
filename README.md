@@ -115,12 +115,34 @@ Receipt:
 | `status` | Read the printer status (net and usb transports). |
 | `serve` | Run the local bridge for the button in the Odoo backend. |
 
-Bridge HTTP endpoints: `GET /` (the web interface), `GET /health`,
-`GET /orders` (the recent orders as JSON, token required), `GET /order`
-(one order's items and variant labels as JSON, token required), `POST
-/print` (print an order, token required), and `POST /printed` (set or
-clear a printed mark by hand, token required; body: `ref`, `kind`
-`receipt` or `internal`, `printed`).
+The bridge is a full web interface with login. Accounts are stored in
+`~/.config/odoo-receipt/users.json` next to the config file, with
+pbkdf2-hashed passwords: a random salt per user plus a server-wide pepper
+(`pepper.txt` in the config folder, or the `ODOO_RECEIPT_PEPPER`
+environment variable). Keep the pepper file out of backups you do not
+control; without it the hashes cannot be verified.
+
+Roles:
+
+- **POS** — the orders page and printing only.
+- **Admin** — also the System settings page: user management, printer
+  settings, the Odoo connection, the receipt layout, and the poll
+  options. It edits the same config file the command line reads.
+
+On the first start with no user file, the bridge serves a quickstart
+page: create the admin account, connect to Odoo, connect a printer
+(Autodetect scans likely LAN hosts for an ESC/POS reply on port 9100),
+or skip with "Not now" and finish later in the settings.
+
+Bridge HTTP endpoints: the pages `GET /` (orders), `GET /login`,
+`GET /quickstart`, `GET /settings` (admin), and the JSON API
+`GET /health`, `GET /orders`, `GET /order`, `POST /login`, `POST
+/logout`, `POST /print`, `POST /printed`, `POST /quickstart/admin`,
+`POST /quickstart/odoo`, `POST /quickstart/printer`,
+`POST /quickstart/detect`, `POST /settings` (read), `POST
+/settings/printer|odoo|receipt|poll`, `POST /users/add|password|role|
+delete`. The browser session is an HttpOnly cookie; the Odoo userscript
+keeps using the `X-Print-Token` header.
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
 
@@ -312,6 +334,8 @@ that runs the container, which is what the Tampermonkey button expects.
 
 - `odoo_receipt.py` — the complete tool: Odoo client, receipt rendering,
   ESC/POS output, printers, poll, bridge, and commands.
+- `auth.py` — user accounts, password hashing (salt + pepper), sessions.
+- `web_pages.py` — the HTML pages of the bridge web interface.
 - `tampermonkey/odoo-receipt-button.user.js` — the userscript for the
   button in the Odoo backend.
 - `docs/research-notes.md` — the research report behind the design, with
