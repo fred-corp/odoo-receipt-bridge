@@ -297,6 +297,43 @@ class E2ETest(unittest.TestCase):
         self.assertEqual(s["width"], 42)
         self.assertTrue(s["show_barcode"])
 
+    def test_19b_settings_odoo_save_and_test(self):
+        _, _, opener = self.login("boss", "test-admin-password")
+        status, data = self.post("/settings/odoo", {
+            "url": "http://127.0.0.1:%d" % ODOO_PORT, "db": "fakedb",
+            "user": "fake", "api": "jsonrpc", "timeout": 30}, opener=opener)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["warning"])
+        self.assertIn("login OK", data["note"])
+
+    def test_19c_settings_odoo_bad_url_is_warning(self):
+        _, _, opener = self.login("boss", "test-admin-password")
+        status, data = self.post("/settings/odoo", {
+            "url": "http://127.0.0.1:1", "db": "fakedb",
+            "user": "fake", "api": "jsonrpc", "timeout": 30}, opener=opener)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["warning"])
+        status, data = self.post("/settings/odoo", {
+            "url": "http://127.0.0.1:%d" % ODOO_PORT, "db": "fakedb",
+            "user": "fake", "api": "jsonrpc", "timeout": 30}, opener=opener)
+        self.assertFalse(data["warning"])
+
+    def test_19d_empty_api_key_keeps_stored_key(self):
+        _, _, opener = self.login("boss", "test-admin-password")
+        status, data = self.post("/settings/odoo", {
+            "url": "http://127.0.0.1:%d" % ODOO_PORT, "db": "fakedb",
+            "user": "fake", "api_key": "", "api": "jsonrpc",
+            "timeout": 30}, opener=opener)
+        self.assertEqual(status, 200)
+        self.assertFalse(data["warning"])
+        _, data = self.post("/settings", {}, opener=opener)
+        self.assertTrue(data["settings"]["has_api_key"])
+        self.assertGreater(data["settings"]["api_key_length"], 0)
+        blob = json.dumps(data)
+        self.assertNotIn("fakepw", blob)
+
     # ---- orders ------------------------------------------------------
 
     def test_20_anonymous_redirected_to_login(self):
@@ -354,10 +391,15 @@ class E2ETest(unittest.TestCase):
         self.assertEqual(status, 303)
 
 
+def method_number(name):
+    digits = "".join(ch for ch in name.split("_")[1] if ch.isdigit())
+    return int(digits) if digits else 0
+
+
 def ordered_suite():
     loader = unittest.TestLoader()
     loader.sortTestMethodsUsing = (
-        lambda a, b: int(a.split("_")[1]) - int(b.split("_")[1]))
+        lambda a, b: method_number(a) - method_number(b))
     return loader.loadTestsFromTestCase(E2ETest)
 
 

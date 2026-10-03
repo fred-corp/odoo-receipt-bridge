@@ -1279,6 +1279,8 @@ def settings_view(cfg, users):
         "url": cfg.get("url") or "",
         "db": cfg.get("db") or "",
         "user": cfg.get("user") or "",
+        "has_api_key": bool(cfg.get("api_key")),
+        "api_key_length": len(cfg.get("api_key") or ""),
         "api": cfg.get("api") or "jsonrpc",
         "timeout": cfg.get("timeout") or 30,
         "shop_name": receipt.get("shop_name") or "",
@@ -1301,9 +1303,12 @@ def settings_view(cfg, users):
 
 
 def apply_odoo_settings(cfg, payload):
-    for key in ("url", "db", "user", "api_key"):
+    for key in ("url", "db", "user"):
         if key in payload:
             cfg[key] = str(payload.get(key) or "").strip()
+    api_key = str(payload.get("api_key") or "").strip()
+    if api_key:
+        cfg["api_key"] = api_key
     cfg["url"] = (cfg.get("url") or "").rstrip("/")
     if payload.get("api") in ("jsonrpc", "json2"):
         cfg["api"] = payload["api"]
@@ -1774,8 +1779,12 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             except (OdooError, PrinterError):
                 BridgeHandler.bridge_printer = None
         elif path == "/settings/odoo":
-            BridgeHandler.bridge_client = (make_client(cfg)
-                                           if cfg.get("url") else None)
+            try:
+                BridgeHandler.bridge_client = (make_client(cfg)
+                                               if cfg.get("url") else None)
+            except OdooError:
+                BridgeHandler.bridge_client = None
+        warning = False
         note = "Saved."
         if path in ("/settings/printer", "/settings/odoo"):
             try:
@@ -1786,7 +1795,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     note = "Saved. Odoo login OK, user id %s." % uid
             except (OdooError, PrinterError) as exc:
                 note = "Saved, but the test failed: %s" % exc
-        self._json(200, {"ok": True, "note": note})
+                warning = True
+        self._json(200, {"ok": True, "note": note, "warning": warning})
 
     def _do_print(self, path, payload):
         if not self._authorized():

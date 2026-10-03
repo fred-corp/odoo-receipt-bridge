@@ -325,7 +325,7 @@ function post(path, payload, status) {
     body: JSON.stringify(payload)
   }).then(function (r) { return r.json(); }).then(function (data) {
     if (data.ok) {
-      status.className = data.warning ? "warn" : "done";
+      status.className = data.warning ? "err" : "done";
       status.textContent = data.note || "";
     } else {
       status.className = "err";
@@ -777,15 +777,6 @@ Decimal comma</label>
 </div>
 
 <div class="card">
-<h2>Setup wizard</h2>
-<p>Run the first-time setup again: create a new administrator account,
-reconnect Odoo, and reconnect a printer. The current users keep working
-until the wizard is finished.</p>
-<p><button id="rerun-setup" class="danger" type="button">
-Re-run setup wizard</button></p>
-</div>
-
-<div class="card">
 <h2>Polling</h2>
 <label>Order states to print, comma separated
 <input type="text" id="poll-states" class="wide" placeholder="sale,done">
@@ -797,6 +788,15 @@ Website orders only</label>
 <input type="number" id="poll-batch" min="1" max="500"></label>
 </p>
 <p><button id="save-poll" type="button">Save polling</button></p>
+</div>
+
+<div class="card">
+<h2>Setup wizard</h2>
+<p>Run the first-time setup again: create a new administrator account,
+reconnect Odoo, and reconnect a printer. The current users keep working
+until the wizard is finished.</p>
+<p><button id="rerun-setup" class="danger" type="button">
+Re-run setup wizard</button></p>
 </div>
 
 <script>
@@ -840,6 +840,9 @@ function loadSettings() {
     document.getElementById("odoo-url").value = s.url;
     document.getElementById("odoo-db").value = s.db;
     document.getElementById("odoo-user").value = s.user;
+    var keyInput = document.getElementById("odoo-key");
+    keyInput.value = s.has_api_key ? "\u2022".repeat(s.api_key_length) : "";
+    keyInput.dataset.placeholderLength = s.has_api_key ? s.api_key_length : 0;
     document.getElementById("odoo-api").value = s.api;
     document.getElementById("odoo-timeout").value = s.timeout;
     document.getElementById("receipt-shop-name").value = s.shop_name;
@@ -954,8 +957,8 @@ document.getElementById("save-printer").addEventListener("click", function () {
     target: document.getElementById("printer-target").value,
     timeout: isNaN(timeout) ? 5 : timeout
   }).then(function (data) {
-    setStatus(data.ok ? (data.note || "Settings saved.") :
-      "Failed: " + data.error);
+    if (!data.ok) { setStatus("Failed: " + data.error); return; }
+    setStatus(data.note || "Settings saved.", data.warning ? "err" : "done");
   });
 });
 document.getElementById("save-odoo").addEventListener("click", function () {
@@ -965,12 +968,21 @@ document.getElementById("save-odoo").addEventListener("click", function () {
     url: document.getElementById("odoo-url").value,
     db: document.getElementById("odoo-db").value,
     user: document.getElementById("odoo-user").value,
-    api_key: document.getElementById("odoo-key").value,
+    api_key: (function () {
+      var key = document.getElementById("odoo-key").value;
+      var stored = parseInt(
+        document.getElementById("odoo-key").dataset.placeholderLength || "0",
+        10);
+      if (!key) { return ""; }
+      if (stored && key.split("\u2022").join("") === "" &&
+          key.length === stored) { return undefined; }
+      return key;
+    })(),
     api: document.getElementById("odoo-api").value,
     timeout: isNaN(timeout) ? 30 : timeout
   }).then(function (data) {
-    setStatus(data.ok ? (data.note || "Settings saved.") :
-      "Failed: " + data.error);
+    if (!data.ok) { setStatus("Failed: " + data.error); return; }
+    setStatus(data.note || "Settings saved.", data.warning ? "err" : "done");
   });
 });
 document.getElementById("save-receipt").addEventListener("click", function () {
