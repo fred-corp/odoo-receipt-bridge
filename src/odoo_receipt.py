@@ -239,10 +239,23 @@ def fetch_lines(client, order):
         by_id = {rec["id"]: rec for rec in extra}
     except OdooError:
         pass
+    # No-variant attribute values are chosen on the product page but they do
+    # not create a product variant, so they are stored on the order line.
+    # Read them in a separate call too, and ignore versions without them.
+    nov_by_id = {}
+    try:
+        nov = client.read("sale.order.line", line_ids,
+                          ["no_variant_attribute_value_ids"])
+        nov_by_id = {rec["id"]: rec for rec in nov}
+    except OdooError:
+        pass
     for line in lines:
-        line["custom_values"] = (
-            by_id.get(line["id"]) or {}).get(
-                "custom_product_template_attribute_value_ids") or []
+        rec = by_id.get(line["id"]) or {}
+        line["custom_values"] = rec.get(
+            "custom_product_template_attribute_value_ids") or []
+        line["no_variant_values"] = (
+            nov_by_id.get(line["id"]) or {}).get(
+                "no_variant_attribute_value_ids") or []
     return lines
 
 
@@ -294,9 +307,11 @@ def fetch_variants(client, lines):
             label = ("%s: %s" % (attr, value)) if attr else str(value)
             if label and label not in entry["attributes"]:
                 entry["attributes"].append(label)
-    # Fetch the custom values separately. They are not on the variant.
+    # Fetch the custom values and the no-variant values separately. They
+    # are not on the variant.
     custom_ids = sorted({pid for line in lines
-                         for pid in (line.get("custom_values") or [])})
+                         for pid in ((line.get("custom_values") or [])
+                                     + (line.get("no_variant_values") or []))})
     custom_ptav = {}
     if custom_ids:
         recs = []
@@ -318,7 +333,8 @@ def line_variant_labels(line, variants, custom_ptav):
     product = line.get("product_id")
     variant = variants.get(product[0]) if product else None
     labels = list((variant or {}).get("attributes") or [])
-    for pid in (line.get("custom_values") or []):
+    for pid in ((line.get("custom_values") or [])
+                + (line.get("no_variant_values") or [])):
         rec = custom_ptav.get(pid)
         if not rec:
             continue
@@ -557,7 +573,8 @@ def build_receipt(order, lines, variants, custom_ptav, currency, cfg):
                         format_money(price, currency, comma))
             for label in variant.get("attributes") or []:
                 receipt.add("    " + label, hang="    ")
-            for pid in (line.get("custom_values") or []):
+            for pid in ((line.get("custom_values") or [])
+                    + (line.get("no_variant_values") or [])):
                 rec = custom_ptav.get(pid)
                 if not rec:
                     continue
@@ -641,7 +658,8 @@ def build_internal_receipt(order, lines, variants, custom_ptav, cfg):
         receipt.add("[ ] %s x %s" % (qty, name), bold=True, hang="    ")
         for label in variant.get("attributes") or []:
             receipt.add("    " + label, hang="    ")
-        for pid in (line.get("custom_values") or []):
+        for pid in ((line.get("custom_values") or [])
+                    + (line.get("no_variant_values") or [])):
             rec = custom_ptav.get(pid)
             if not rec:
                 continue

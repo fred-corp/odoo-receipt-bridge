@@ -162,8 +162,9 @@ itself.
 
 Each row also has a Details button. It expands the row and shows the
 order items with their quantity, the variant labels (for example
-`Assembly: Kit` or `Type: Soldered`), and the custom attribute values,
-loaded on demand so the list stays fast.
+`Assembly: Kit` or `Type: Soldered`), the attribute values that do not
+create a variant, and the custom attribute values, loaded on demand so
+the list stays fast.
 
 Endpoint parameters for `GET /order?ref=NAME_OR_ID`: none. It returns the
 items with the variant labels as JSON, token required.
@@ -283,8 +284,11 @@ that runs the container, which is what the Tampermonkey button expects.
   later. It uses the API key as a bearer token. Verify the request format
   against the Odoo documentation before you rely on it.
 - Product variants come from the order line product (`product.product`) and
-  its `product_template_attribute_value_ids` records. Custom attribute
-  values are read from the order line, when the Odoo version has the field.
+  its `product_template_attribute_value_ids` records. Attribute values
+  that do not create a variant (for example a kit/soldered option with one
+  stock item) come from the order line field
+  `no_variant_attribute_value_ids`. Custom attribute values are read from
+  the order line, when the Odoo version has the field.
 
 ## Project layout
 
