@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 3 * * *"
   push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - ".github/workflows/docker-build.yml"
+      - "Dockerfile"
     tags:
       - "v*"
 
@@ -41,6 +47,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=schedule,pattern=nightly
+            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern=latest
