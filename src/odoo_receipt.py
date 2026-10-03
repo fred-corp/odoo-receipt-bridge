@@ -1656,13 +1656,15 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             apply_odoo_settings(self.bridge_cfg, payload)
             save_config(self.bridge_cfg, self.bridge_config_path)
             note = "Saved."
+            warning = False
             try:
                 uid = test_odoo(self.bridge_cfg)
                 note = "Saved. Odoo login OK, user id %s." % uid
                 BridgeHandler.bridge_client = make_client(self.bridge_cfg)
             except (OdooError, PrinterError) as exc:
                 note = "Saved, but the connection failed: %s" % exc
-            self._json(200, {"ok": True, "note": note})
+                warning = True
+            self._json(200, {"ok": True, "note": note, "warning": warning})
             return
         if path == "/quickstart/printer":
             try:
@@ -1672,13 +1674,15 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 return
             save_config(self.bridge_cfg, self.bridge_config_path)
             note = "Saved."
+            warning = False
             try:
                 test_printer(self.bridge_cfg)
                 note = "Saved. The printer answered."
                 BridgeHandler.bridge_printer = open_printer(self.bridge_cfg)
             except (OdooError, PrinterError) as exc:
                 note = "Saved, but the printer test failed: %s" % exc
-            self._json(200, {"ok": True, "note": note})
+                warning = True
+            self._json(200, {"ok": True, "note": note, "warning": warning})
             return
         if path == "/quickstart/detect":
             printers = detect_printers(self.bridge_cfg)

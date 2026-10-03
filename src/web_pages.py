@@ -69,6 +69,15 @@ STYLE = """
  .muted { color: var(--muted); }
  .nav { margin-bottom: 1.5rem; }
  .nav a { margin-right: 1.2rem; }
+ .menubar { position: relative; margin-bottom: 1rem; }
+ #menu-btn { font-size: 1.1rem; padding: .25rem .6rem; }
+ .menu { display: none; }
+ .menu.open { display: block; position: absolute; top: 2.4rem; left: 0;
+              background: var(--bg); border: 1px solid var(--line);
+              border-radius: 6px; padding: .8rem 1.2rem; z-index: 20;
+              min-width: 12rem; box-shadow: 0 2px 10px rgba(0,0,0,.25); }
+ .menu a, .menu button { display: block; margin: .5rem 0; text-align: left; }
+ .menu #who { display: block; margin-top: .8rem; font-size: .9rem; }
  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 """
 
@@ -97,15 +106,45 @@ THEME_JS = """
 THEME_BTN = ("""<button id="theme" type="button" """
              """title="Switch light/dark theme">&#9681;</button>""")
 
-NAV_ADMIN = ("""<a href="/">Orders</a>"""
-             """<a href="/settings">System settings</a>"""
-             """<a href="#" id="logout">"""
-             """Log out (<span id="who"></span>)</a>"""
-             + THEME_BTN)
-NAV_POS = ("""<a href="/">Orders</a>"""
-           """<a href="#" id="logout">"""
-           """Log out (<span id="who"></span>)</a>"""
-           + THEME_BTN)
+NAV_JS = """
+(function () {
+  "use strict";
+  document.addEventListener("click", function (event) {
+    var btn = event.target.closest ? event.target.closest("#menu-btn") : null;
+    var menu = document.getElementById("menu");
+    if (btn) {
+      menu.classList.toggle("open");
+      return;
+    }
+    if (menu && menu.classList.contains("open")
+        && !menu.contains(event.target)) {
+      menu.classList.remove("open");
+    }
+  });
+})();
+"""
+
+
+def nav_menu(items):
+    links = "".join(
+        '<a href="%s"%s>%s</a>' % (href, ' id="%s"' % id_ if id_ else "", label)
+        for href, id_, label in items)
+    return ("""<nav class="menubar">"""
+            """<button id="menu-btn" type="button" """
+            """title="Menu">"""
+            """&#9776;</button>"""
+            """<div id="menu" class="menu">"""
+            + links +
+            """<span id="who" class="muted"></span>"""
+            + THEME_BTN +
+            """</div></nav>""" + NAV_JS)
+
+
+NAV_ADMIN = nav_menu([("/", "", "Orders"),
+                     ("/settings", "", "System settings"),
+                     ("#", "logout", "Log out")])
+NAV_POS = nav_menu([("/", "", "Orders"),
+                   ("#", "logout", "Log out")])
 
 
 def page(title, body, extra_style="", nav=""):
@@ -270,28 +309,31 @@ if (currentConfig.printer) {
   }
 }
 function post(path, payload, status) {
+  status.className = "";
   status.textContent = "Working ...";
   return fetch(path, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(payload)
   }).then(function (r) { return r.json(); }).then(function (data) {
-    status.textContent = data.ok ? "" : (data.error || "Failed.");
-    if (data.ok && data.note) { status.textContent = data.note; }
+    if (data.ok) {
+      status.className = data.warning ? "warn" : "done";
+      status.textContent = data.note || "";
+    } else {
+      status.className = "err";
+      status.textContent = data.error || "Failed.";
+    }
     return data;
-  }).catch(function (err) { status.textContent = "Failed: " + err; });
+  }).catch(function (err) {
+    status.className = "err";
+    status.textContent = "Failed: " + err;
+  });
 }
 document.getElementById("create-admin").addEventListener("click", function () {
   post("/quickstart/admin", {
     username: document.getElementById("admin-user").value,
     password: document.getElementById("admin-pass").value
-  }, document.getElementById("admin-status")).then(function (data) {
-    if (data.ok) {
-      document.getElementById("admin-status").className = "done";
-      document.getElementById("admin-status").textContent =
-        "Account created. Log in at the end.";
-    }
-  });
+  }, document.getElementById("admin-status"));
 });
 document.getElementById("save-odoo").addEventListener("click", function () {
   post("/quickstart/odoo", {
@@ -770,8 +812,8 @@ function post(path, payload) {
   }).then(function (r) { return r.json(); });
 }
 function loadSettings() {
-  fetch("/settings", {headers: {"X-Print-Token": token}})
-    .then(function (r) { return r.json(); })
+  post("/settings", {})
+    .then(function (r) { return r; })
     .then(function (data) {
     if (!data.ok) { setStatus("Failed: " + data.error); return; }
     var s = data.settings;
