@@ -137,7 +137,7 @@ def nav_menu(items):
             + links +
             """<span id="who" class="muted"></span>"""
             + THEME_BTN +
-            """</div></nav>""" + NAV_JS)
+            """</div></nav><script>""" + NAV_JS + """</script>""")
 
 
 NAV_ADMIN = nav_menu([("/", "", "Orders"),
