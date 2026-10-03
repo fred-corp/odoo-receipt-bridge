@@ -232,30 +232,41 @@ def fetch_lines(client, order):
     lines.sort(key=lambda line: pos.get(line["id"], 0))
     # Custom attribute values exist on Odoo 17 and later. Read them in a
     # separate call. Older versions reject the field. Ignore that error.
-    by_id = {}
-    try:
-        extra = client.read("sale.order.line", line_ids,
-                            ["custom_product_template_attribute_value_ids"])
-        by_id = {rec["id"]: rec for rec in extra}
-    except OdooError:
-        pass
     # No-variant attribute values are chosen on the product page but they do
     # not create a product variant, so they are stored on the order line.
     # Read them in a separate call too, and ignore versions without them.
-    nov_by_id = {}
-    try:
-        nov = client.read("sale.order.line", line_ids,
-                          ["no_variant_attribute_value_ids"])
-        nov_by_id = {rec["id"]: rec for rec in nov}
-    except OdooError:
-        pass
+    extra_fields = []
+    for field in ("custom_product_template_attribute_value_ids",
+                  "product_custom_attribute_value_ids",
+                  "no_variant_attribute_value_ids",
+                  "product_no_variant_attribute_value_ids"):
+        try:
+            extra = client.read("sale.order.line", line_ids, [field])
+        except OdooError:
+            continue
+        extra_fields.append((field, {rec["id"]: rec for rec in extra}))
     for line in lines:
-        rec = by_id.get(line["id"]) or {}
-        line["custom_values"] = rec.get(
-            "custom_product_template_attribute_value_ids") or []
-        line["no_variant_values"] = (
-            nov_by_id.get(line["id"]) or {}).get(
-                "no_variant_attribute_value_ids") or []
+        custom_values = []
+        no_variant_values = []
+        for field, by_id in extra_fields:
+            rec = by_id.get(line["id"]) or {}
+            if field in ("custom_product_template_attribute_value_ids",
+                         "product_custom_attribute_value_ids"):
+                # Odoo 17 and later: a one2many to records that point to
+                # the attribute value. Follow the pointer.
+                ids = rec.get(field) or []
+                if field == "product_custom_attribute_value_ids" and ids:
+                    recs = client.read("product.attribute.custom.value",
+                                       ids,
+                                       ["custom_product_template_"
+                                        "attribute_value_id"])
+                    ids = [r.get("custom_product_template_attribute_value_id")
+                           for r in recs]
+                custom_values += [i for i in ids if i]
+            else:
+                no_variant_values += rec.get(field) or []
+        line["custom_values"] = custom_values
+        line["no_variant_values"] = no_variant_values
     return lines
 
 
@@ -587,6 +598,7 @@ def build_receipt(order, lines, variants, custom_ptav, currency, cfg):
                         format_money(price, currency, comma))
             for label in variant.get("attributes") or []:
                 receipt.add("    " + label, hang="    ")
+            seen_labels = set(variant.get("attributes") or [])
             for pid in ((line.get("custom_values") or [])
                     + (line.get("no_variant_values") or [])):
                 rec = custom_ptav.get(pid)
@@ -597,6 +609,9 @@ def build_receipt(order, lines, variants, custom_ptav, currency, cfg):
                     attr = rec["attribute_id"][1] or ""
                 value = rec.get("custom_value") or rec.get("name") or ""
                 label = ("%s: %s" % (attr, value)) if attr else str(value)
+                if label in seen_labels:
+                    continue
+                seen_labels.add(label)
                 receipt.add("    " + label, hang="    ")
             if rc.get("show_unit_price"):
                 receipt.add("    Unit price: " + format_money(
@@ -673,6 +688,7 @@ def build_internal_receipt(order, lines, variants, custom_ptav, cfg):
         receipt.add("[ ] %s x %s" % (qty, name), bold=True, hang="    ")
         for label in variant.get("attributes") or []:
             receipt.add("    " + label, hang="    ")
+        seen_labels = set(variant.get("attributes") or [])
         for pid in ((line.get("custom_values") or [])
                     + (line.get("no_variant_values") or [])):
             rec = custom_ptav.get(pid)
@@ -683,6 +699,9 @@ def build_internal_receipt(order, lines, variants, custom_ptav, cfg):
                 attr = rec["attribute_id"][1] or ""
             value = rec.get("custom_value") or rec.get("name") or ""
             label = ("%s: %s" % (attr, value)) if attr else str(value)
+            if label in seen_labels:
+                continue
+            seen_labels.add(label)
             receipt.add("    " + label, hang="    ")
         try:
             total_qty += float(line.get("product_uom_qty") or 0)
