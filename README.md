@@ -153,6 +153,28 @@ keeps using the `X-Print-Token` header.
 Common options before the subcommand: `--config`, `--url`, `--db`, `--user`,
 `--api-key`, `--transport`, `--target`, `--width`, `--margin`, `--dry-run`.
 
+## Tests
+
+The repo ships a test suite in `tests/` that runs on every push and pull
+request (and nightly) via GitHub Actions:
+
+- `tests/test_auth.py` — unit tests for the password hashing (salt +
+  pepper, PBKDF2 rounds), session expiry and destruction, the user store,
+  and the pepper file handling.
+- `tests/test_e2e.py` — end-to-end tests that start the real web server
+  against a fake Odoo JSON-RPC server and a fake ESC/POS printer:
+  quickstart flow, config prefill, admin/POS role separation, wizard
+  re-run, settings save, logout revocation, and security checks (no
+  secrets in responses, hashes only in the user file, anonymous access
+  redirected).
+
+Run them locally with:
+
+```bash
+python tests/test_auth.py
+python tests/test_e2e.py
+```
+
 ## How the poll works
 
 The poll uses an id watermark and a list of printed order names in the state
