@@ -272,12 +272,25 @@ def fetch_variants(client, lines):
     if not ids:
         return variants, {}
     prods = client.read("product.product", ids,
-                        ["name", "product_template_attribute_value_ids"])
+                        ["name", "display_name", "product_tmpl_id",
+                         "product_template_attribute_value_ids"])
     for prod in prods:
         variants[prod["id"]] = {
             "name": prod.get("name") or prod.get("display_name") or "",
+            "template_name": "",
             "attributes": [],
         }
+    tmpl_ids = sorted({prod["product_tmpl_id"][0] for prod in prods
+                       if prod.get("product_tmpl_id")})
+    if tmpl_ids:
+        try:
+            tmpls = {t["id"]: t for t in client.read(
+                "product.template", tmpl_ids, ["name"])}
+            for prod in prods:
+                tmpl = tmpls.get(prod.get("product_tmpl_id", [0])[0]) or {}
+                variants[prod["id"]]["template_name"] = tmpl.get("name") or ""
+        except OdooError:
+            pass
     ptav_ids = sorted({pid for prod in prods
                        for pid in
                        (prod.get("product_template_attribute_value_ids")
@@ -567,7 +580,8 @@ def build_receipt(order, lines, variants, custom_ptav, currency, cfg):
         product = line.get("product_id")
         if product:
             variant = variants.get(product[0]) or {}
-            name = variant.get("name") or str(product[1])
+            name = (variant.get("template_name")
+                    or variant.get("name") or str(product[1]))
             qty = format_qty(line.get("product_uom_qty") or 0)
             receipt.row("%s x %s" % (qty, name),
                         format_money(price, currency, comma))
@@ -653,7 +667,8 @@ def build_internal_receipt(order, lines, variants, custom_ptav, cfg):
             receipt.add("")
         first = False
         variant = variants.get(product[0]) or {}
-        name = variant.get("name") or str(product[1])
+        name = (variant.get("template_name")
+                    or variant.get("name") or str(product[1]))
         qty = format_qty(line.get("product_uom_qty") or 0)
         receipt.add("[ ] %s x %s" % (qty, name), bold=True, hang="    ")
         for label in variant.get("attributes") or []:
@@ -1384,9 +1399,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     product = line.get("product_id")
                     if not product:
                         continue
+                    variant = variants.get(product[0]) or {}
                     items.append({
                         "name": line.get("name") or product[1],
-                        "product": product[1],
+                        "product": (variant.get("template_name")
+                                     or variant.get("name") or product[1]),
                         "qty": line.get("product_uom_qty") or 0,
                         "variants": line_variant_labels(line, variants,
                                                         custom_ptav),

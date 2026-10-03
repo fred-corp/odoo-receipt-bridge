@@ -289,6 +289,9 @@ that runs the container, which is what the Tampermonkey button expects.
   stock item) come from the order line field
   `no_variant_attribute_value_ids`. Custom attribute values are read from
   the order line, when the Odoo version has the field.
+- Receipts and packing lists show the product template name, without the
+  variant suffix in parentheses (for example `SSD1306 128x64 OLED`). The
+  variant labels underneath the item carry that information instead.
 
 ## Project layout
 
