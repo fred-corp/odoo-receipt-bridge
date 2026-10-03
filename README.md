@@ -235,6 +235,14 @@ The repo has a `Dockerfile` and a `docker-compose.yml`, so you can self-host
 the poller as a container. The image is small: the script needs only the
 Python standard library.
 
+Prebuilt multi-arch images (linux/amd64 and linux/arm64) are published on
+GHCR: a `nightly` build runs every night, and every `v*` tag (for example
+`v1.0`) publishes `1.0`, `1.0.x`-style version tags and `latest`:
+
+```bash
+docker pull ghcr.io/fred-corp/odoo-receipt-bridge:latest
+```
+
 ### Run with Docker
 
 ```bash

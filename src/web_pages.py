@@ -66,6 +66,13 @@ STYLE = """
          padding: 1rem 1.2rem; margin: 1.5rem 0; }
  .card h2 { margin-top: 0; }
  .err { color: var(--err); }
+ .toast { position: fixed; bottom: 1.2rem; right: 1.2rem; z-index: 50;
+          margin: 0; padding: .6rem 1rem; border-radius: 6px;
+          border: 1px solid var(--line); background: var(--bg);
+          box-shadow: 0 2px 10px rgba(0,0,0,.25); display: none; }
+ .toast.show { display: block; }
+ .toast.done { color: var(--ok); }
+ .toast.err { color: var(--err); }
  .muted { color: var(--muted); }
  .nav { margin-bottom: 1.5rem; }
  .nav a { margin-right: 1.2rem; }
@@ -652,7 +659,7 @@ loadOrders();
 
 SETTINGS_PAGE = page("System settings - Odoo Receipt Bridge", """
 <h1>System settings</h1>
-<p id="status"></p>
+<p id="status" class="toast"></p>
 <div class="card">
 <h2>Users</h2>
 <table id="users"><thead><tr><th>Username</th><th>Role</th>
@@ -803,7 +810,15 @@ document.getElementById("logout").addEventListener("click", function () {
   });
 });
 var statusEl = document.getElementById("status");
-function setStatus(text) { statusEl.textContent = text; }
+var statusTimer = null;
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = "toast show " + (kind || (text.indexOf("Failed") === 0 ? "err" : "done"));
+  if (statusTimer) { clearTimeout(statusTimer); }
+  statusTimer = setTimeout(function () {
+    statusEl.className = "toast";
+  }, 4000);
+}
 function post(path, payload) {
   return fetch(path, {
     method: "POST",
@@ -938,7 +953,7 @@ document.getElementById("save-printer").addEventListener("click", function () {
     target: document.getElementById("printer-target").value,
     timeout: isNaN(timeout) ? 5 : timeout
   }).then(function (data) {
-    setStatus(data.ok ? (data.note || "Printer saved.") :
+    setStatus(data.ok ? (data.note || "Settings saved.") :
       "Failed: " + data.error);
   });
 });
@@ -953,7 +968,7 @@ document.getElementById("save-odoo").addEventListener("click", function () {
     api: document.getElementById("odoo-api").value,
     timeout: isNaN(timeout) ? 30 : timeout
   }).then(function (data) {
-    setStatus(data.ok ? (data.note || "Odoo saved.") :
+    setStatus(data.ok ? (data.note || "Settings saved.") :
       "Failed: " + data.error);
   });
 });
@@ -977,7 +992,7 @@ document.getElementById("save-receipt").addEventListener("click", function () {
     price_mode: document.getElementById("receipt-price-mode").value,
     internal_receipts: document.getElementById("receipt-internal").value
   }).then(function (data) {
-    setStatus(data.ok ? "Receipt saved." : "Failed: " + data.error);
+    setStatus(data.ok ? "Settings saved." : "Failed: " + data.error);
   });
 });
 document.getElementById("save-poll").addEventListener("click", function () {
@@ -987,7 +1002,7 @@ document.getElementById("save-poll").addEventListener("click", function () {
     only_website: document.getElementById("poll-website").checked,
     batch: isNaN(batch) ? 50 : batch
   }).then(function (data) {
-    setStatus(data.ok ? "Polling saved." : "Failed: " + data.error);
+    setStatus(data.ok ? "Settings saved." : "Failed: " + data.error);
   });
 });
 document.getElementById("rerun-setup")
