@@ -1,0 +1,1 @@
+# odoo-receipt-bridge
