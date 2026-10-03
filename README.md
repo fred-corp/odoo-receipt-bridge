@@ -254,8 +254,10 @@ On Windows, use Task Scheduler with the `poll` command.
 ## Docker
 
 The repo has a `Dockerfile` and a `docker-compose.yml`, so you can self-host
-the poller as a container. The image is small: the script needs only the
-Python standard library.
+the bridge as a container. The image is small: the script needs only the
+Python standard library. **Running it with Docker Compose is the
+recommended setup**: it keeps the config and state in bind-mounted
+directories and survives rebuilds and updates.
 
 Prebuilt multi-arch images (linux/amd64 and linux/arm64) are published on
 GHCR: a `nightly` build runs every night, and every `v*` tag (for example
@@ -265,11 +267,84 @@ GHCR: a `nightly` build runs every night, and every `v*` tag (for example
 docker pull ghcr.io/fred-corp/odoo-receipt-bridge:latest
 ```
 
-### Run with Docker
+### Two modes: poll or serve
+
+The container runs in one of two modes, picked by the command:
+
+- **Poll mode** (the default, `poll --interval 30`): the container polls
+  Odoo on a timer and prints every new confirmed order automatically. No
+  web interface, no port to expose. This is the "headless" setup.
+- **Serve mode** (`serve --bind 0.0.0.0 --port 8765`): the container runs
+  the web interface — the login page, the orders page, the settings, the
+  quickstart wizard — and the Odoo backend button. Orders are printed from
+  the web UI or the button; nothing prints automatically.
+
+Pick one mode per container. To have both the automatic poll and the web
+interface, run two containers from the same image sharing the same
+`./config` and `./state` directories.
+
+### Run with Docker Compose (recommended)
+
+The bundled `docker-compose.yml` defaults to **poll mode**. Edit the
+environment values, then:
 
 ```bash
-docker build -t odoo-receipt-bridge .
+mkdir -p config state
+docker compose up -d
+docker compose logs -f          # watch the poller
+```
 
+`config/` and `state/` are bind-mounted, so the config file, the user
+accounts, and the poll watermark survive rebuilds. To write the initial
+config file with defaults:
+
+```bash
+docker compose run --rm odoo-receipt-bridge init
+# then edit config/config.json
+docker compose restart
+```
+
+To run the **web interface** instead of the poll, switch the service to
+serve mode by adding a `command` and a `ports` mapping:
+
+```yaml
+services:
+  odoo-receipt-bridge:
+    image: ghcr.io/fred-corp/odoo-receipt-bridge:latest
+    restart: unless-stopped
+    command: serve --bind 0.0.0.0 --port 8765
+    ports:
+      - "8765:8765"              # LAN-reachable web UI
+      # - "127.0.0.1:8765:8765"  # or: host-only, e.g. behind a proxy
+    volumes:
+      - ./config:/config
+      - ./state:/state
+    environment:
+      ODOO_URL: https://myshop.odoo.com
+      ODOO_DB: myshop
+      ODOO_USER: api-user@example.com
+      ODOO_API_KEY: replace-me
+      PRINTER_TRANSPORT: net
+      PRINTER_TARGET: 192.168.1.50:9100
+      ODOO_STATE_PATH: /state/state.json
+```
+
+Then `docker compose up -d` and open `http://<host>:8765/`. The
+`--bind 0.0.0.0` is required: inside the container the default bind is
+`127.0.0.1`, which no port mapping can reach. On the first start the
+quickstart wizard asks you to create the admin account; the environment
+variables pre-seed the Odoo and printer settings.
+
+To run **both modes**, add a second service with the same image, volumes,
+and environment but the default (poll) command — for example name it
+`odoo-receipt-poller` — and keep `ports` only on the serve service.
+
+### Run with plain Docker
+
+```bash
+docker pull ghcr.io/fred-corp/odoo-receipt-bridge:latest
+
+# poll mode (the default command):
 docker run -d --name odoo-receipt-bridge \
   -e ODOO_URL=https://myshop.odoo.com \
   -e ODOO_DB=myshop \
@@ -277,10 +352,17 @@ docker run -d --name odoo-receipt-bridge \
   -e ODOO_API_KEY=... \
   -e PRINTER_TRANSPORT=net \
   -e PRINTER_TARGET=192.168.1.50:9100 \
-  -e ODOO_STATE_PATH=/data/state.json \
+  -e ODOO_STATE_PATH=/state/state.json \
   -v receipt-config:/config \
-  -v receipt-state:/data \
-  odoo-receipt-bridge poll --interval 30
+  -v receipt-state:/state \
+  ghcr.io/fred-corp/odoo-receipt-bridge:latest
+
+# serve mode (web UI):
+docker run -d --name odoo-receipt-bridge \
+  ...same env vars and volumes... \
+  -p 8765:8765 \
+  ghcr.io/fred-corp/odoo-receipt-bridge:latest \
+  serve --bind 0.0.0.0 --port 8765
 ```
 
 The entrypoint always passes `--config /config/config.json`, so mount a
@@ -294,42 +376,12 @@ docker run --rm -it ...same env vars... odoo-receipt-bridge orders
 docker run --rm -it ...same env vars... odoo-receipt-bridge print S00042 --text
 ```
 
-### Run with Docker Compose
-
-Edit the environment values in `docker-compose.yml`, then:
-
-```bash
-mkdir -p config state
-docker compose up -d --build
-docker compose logs -f          # watch the poller
-docker compose run --rm odoo-receipt-bridge check
-```
-
-`config/` and `state/` are bind-mounted, so the config file and the poll
-watermark survive a rebuild. To write the initial config file with
-defaults:
-
-```bash
-docker compose run --rm odoo-receipt-bridge init
-# then edit config/config.json
-docker compose restart
-```
-
 ### The bridge button in Docker
 
-To run the `serve` command for the Odoo backend button instead of the poll,
-override the command and the port mapping. Keep the bind on `0.0.0.0`
-inside the container and map the port; the token still protects the
-endpoint:
-
-```yaml
-    command: serve --bind 0.0.0.0 --port 8765
-    ports:
-      - "127.0.0.1:8765:8765"
-```
-
-Mapping `127.0.0.1:8765:8765` keeps the bridge reachable only from the host
-that runs the container, which is what the Tampermonkey button expects.
+In serve mode the same web server also serves the Odoo backend button (the
+Tampermonkey script). The endpoint is protected by the bridge token in
+`config/config.json`. To keep the button reachable only from the Docker
+host, map `127.0.0.1:8765:8765` instead of `8765:8765`.
 
 ### Printer notes
 

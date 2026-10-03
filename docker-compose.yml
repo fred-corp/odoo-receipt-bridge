@@ -1,7 +1,6 @@
 services:
   odoo-receipt-bridge:
-    build: .
-    image: odoo-receipt-bridge
+    image: ghcr.io/fred-corp/odoo-receipt-bridge:latest
     restart: unless-stopped
     volumes:
       - ./config:/config
@@ -14,3 +13,15 @@ services:
       PRINTER_TRANSPORT: net
       PRINTER_TARGET: 192.168.1.50:9100
       ODOO_STATE_PATH: /state/state.json
+
+    # Poll mode (default): print every new confirmed order automatically.
+    # For the web interface instead, comment the line below and uncomment
+    # the command and ports to run serve mode.
+    command: poll --interval 30
+
+    # Serve mode: the web UI (login, orders, settings, quickstart) on
+    # http://<host>:8765/ . The bind on 0.0.0.0 is required inside the
+    # container; map 127.0.0.1:8765:8765 to keep it on the Docker host only.
+    # command: serve --bind 0.0.0.0 --port 8765
+    # ports:
+    #   - "8765:8765"
