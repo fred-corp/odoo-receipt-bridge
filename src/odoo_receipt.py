@@ -21,7 +21,7 @@
 # Settings come from three sources. Later sources override earlier ones:
 #   1. the config file (default: ~/.config/odoo-receipt/config.json),
 #   2. environment variables (ODOO_URL, ODOO_DB, ODOO_USER, ODOO_API_KEY,
-#      PRINTER_TRANSPORT, PRINTER_TARGET),
+#      PRINTER_TRANSPORT, PRINTER_TARGET, ODOO_STATE_PATH),
 #   3. command line options.
 #
 # Put the command line options before the subcommand:
@@ -1242,6 +1242,8 @@ def cmd_init(cfg, args):
         print("The config file exists already: %s" % path)
         return 1
     skeleton = json.loads(json.dumps(DEFAULT_CONFIG))
+    if os.environ.get("ODOO_STATE_PATH"):
+        skeleton["state_path"] = os.environ["ODOO_STATE_PATH"]
     skeleton["url"] = "https://YOURSHOP.odoo.com"
     skeleton["db"] = "YOUR_DATABASE_NAME"
     skeleton["user"] = "you@example.com"
@@ -1564,6 +1566,8 @@ def load_config(path):
         cfg["printer"]["transport"] = os.environ["PRINTER_TRANSPORT"]
     if os.environ.get("PRINTER_TARGET"):
         cfg["printer"]["target"] = os.environ["PRINTER_TARGET"]
+    if os.environ.get("ODOO_STATE_PATH"):
+        cfg["state_path"] = os.environ["ODOO_STATE_PATH"]
     return cfg
 
 

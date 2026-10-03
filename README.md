@@ -50,6 +50,10 @@ The config file is at `~/.config/odoo-receipt/config.json`. Environment
 variables and command line options override it. Put the command line options
 before the subcommand: `python odoo_receipt.py --dry-run poll --once`.
 
+Environment variables: `ODOO_URL`, `ODOO_DB`, `ODOO_USER`, `ODOO_API_KEY`
+(or `ODOO_PASSWORD`), `PRINTER_TRANSPORT`, `PRINTER_TARGET`, and
+`ODOO_STATE_PATH` (the poll state file).
+
 Odoo connection:
 
 - `url`: the base URL, for example `https://myshop.odoo.com`.
@@ -160,6 +164,90 @@ WantedBy=default.target
 ```
 
 On Windows, use Task Scheduler with the `poll` command.
+
+## Docker
+
+The repo has a `Dockerfile` and a `docker-compose.yml`, so you can self-host
+the poller as a container. The image is small: the script needs only the
+Python standard library.
+
+### Run with Docker
+
+```bash
+docker build -t odoo-receipt-bridge .
+
+docker run -d --name odoo-receipt-bridge \
+  -e ODOO_URL=https://myshop.odoo.com \
+  -e ODOO_DB=myshop \
+  -e ODOO_USER=api-user@example.com \
+  -e ODOO_API_KEY=... \
+  -e PRINTER_TRANSPORT=net \
+  -e PRINTER_TARGET=192.168.1.50:9100 \
+  -e ODOO_STATE_PATH=/data/state.json \
+  -v receipt-config:/config \
+  -v receipt-state:/data \
+  odoo-receipt-bridge poll --interval 30
+```
+
+The entrypoint always passes `--config /config/config.json`, so mount a
+volume (or a directory) on `/config` to keep the config. The default command
+is `poll --interval 30`. Any arguments after the image name replace the
+command, for example:
+
+```bash
+docker run --rm -it ...same env vars... odoo-receipt-bridge check
+docker run --rm -it ...same env vars... odoo-receipt-bridge orders
+docker run --rm -it ...same env vars... odoo-receipt-bridge print S00042 --text
+```
+
+### Run with Docker Compose
+
+Edit the environment values in `docker-compose.yml`, then:
+
+```bash
+mkdir -p config state
+docker compose up -d --build
+docker compose logs -f          # watch the poller
+docker compose run --rm odoo-receipt-bridge check
+```
+
+`config/` and `state/` are bind-mounted, so the config file and the poll
+watermark survive a rebuild. To write the initial config file with
+defaults:
+
+```bash
+docker compose run --rm odoo-receipt-bridge init
+# then edit config/config.json
+docker compose restart
+```
+
+### The bridge button in Docker
+
+To run the `serve` command for the Odoo backend button instead of the poll,
+override the command and the port mapping. Keep the bind on `0.0.0.0`
+inside the container and map the port; the token still protects the
+endpoint:
+
+```yaml
+    command: serve --bind 0.0.0.0 --port 8765
+    ports:
+      - "127.0.0.1:8765:8765"
+```
+
+Mapping `127.0.0.1:8765:8765` keeps the bridge reachable only from the host
+that runs the container, which is what the Tampermonkey button expects.
+
+### Printer notes
+
+- `net` (TCP 9100) is the natural transport in a container. The printer
+  must be reachable from the container network, which is the case for a
+  LAN printer on the default bridge network.
+- `usb` and `dev` need access to the USB or printer device; pass it with
+  `--device /dev/usb/lp0` (and `privileged: true` for raw USB), but prefer
+  `net` in Docker.
+- `cups` and `win` do not apply inside the container. Print through the
+  CUPS or Windows host with the `net` transport instead.
+- Set `receipt.timezone`, because the container runs in UTC by default.
 
 ## Notes on the Odoo API
 
