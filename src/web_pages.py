@@ -951,6 +951,7 @@ function loadUsers(users) {
     });
     var delBtn = document.createElement("button");
     delBtn.type = "button";
+    delBtn.className = "danger";
     delBtn.textContent = "Delete";
     delBtn.addEventListener("click", function () {
       post("/users/delete", {username: u.username}).then(function (data) {
