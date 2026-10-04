@@ -430,6 +430,12 @@ host, map `127.0.0.1:8765:8765` instead of `8765:8765`.
 - `docs/research-notes.md` — the research report behind the design, with
   sources.
 
-## License
+---
 
-See the LICENSE file.
+## License & Acknowledgements
+
+Made with ❤️, lots of ☕️, and lack of 🛌  
+Published under CreativeCommons BY-SA 4.0
+
+[![Creative Commons License](https://i.creativecommons.org/l/by-sa/4.0/88x31.png)](http://creativecommons.org/licenses/by-sa/4.0/)  
+This work is licensed under a [Creative Commons Attribution-ShareAlike 4.0 International License](http://creativecommons.org/licenses/by-sa/4.0/).
