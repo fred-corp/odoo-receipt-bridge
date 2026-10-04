@@ -87,6 +87,34 @@ STYLE = """
  .menu a, .menu button { display: block; margin: .5rem 0; text-align: left; }
  .menu #who { display: block; margin-top: .8rem; font-size: .9rem; }
  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+ #ref { max-width: 100%; box-sizing: border-box; }
+ @media (max-width: 40rem) {
+   body { margin: 1rem auto; padding: 0 .7rem; }
+   h1 { font-size: 1.25rem; }
+   h2 { margin-top: 1.5rem; }
+   button { padding: .55rem .8rem; min-height: 2.6rem; }
+   td.actions button, tr.detail button { padding: .45rem .7rem; }
+   input[type=text], input[type=password], input[type=number],
+   textarea, select { font-size: 1rem; }
+   #ref { width: 100%; }
+   td.mark { padding: .45rem .6rem; }
+   .toast { left: .7rem; right: .7rem; bottom: .7rem; }
+   table.responsive { border: 0; }
+   table.responsive thead { display: none; }
+   table.responsive tbody tr { display: block; border: 1px solid var(--line);
+     border-radius: 6px; margin: .6rem 0; padding: .3rem .8rem .5rem; }
+   table.responsive tbody td { display: flex; justify-content: space-between;
+     align-items: baseline; gap: .8rem; border-bottom: 0;
+     padding: .3rem 0; }
+   table.responsive tbody td::before { content: attr(data-label);
+     color: var(--muted); font-size: .85rem; flex: 0 0 auto; }
+   table.responsive tbody td.actions { flex-wrap: wrap; gap: .4rem;
+     padding-top: .5rem; border-top: 1px solid var(--line); }
+   table.responsive tbody td.actions::before { content: none; }
+   table.responsive tbody tr.detail { border: 0; padding: 0; }
+   table.responsive tbody tr.detail td { display: block; padding: .4rem .2rem; }
+   table.responsive tbody tr.detail td::before { content: none; }
+ }
 """
 
 THEME_JS = """
@@ -438,7 +466,7 @@ Website only</label>
 </select></label>
 <span id="hint">Loading orders ...</span>
 </p>
-<table id="orders">
+<table id="orders" class="responsive">
 <thead><tr><th>Order</th><th>Date</th><th>State</th><th>Total</th>
 <th>Customer</th><th>Receipt</th><th>Packing</th><th></th></tr></thead>
 <tbody></tbody>
@@ -531,10 +559,11 @@ function toggleDetail(ref, btn, tr) {
     })
     .catch(function (err) { td.textContent = "Failed: " + err; });
 }
-function cell(row, text, cls) {
+function cell(row, text, cls, label) {
   var td = document.createElement("td");
   td.textContent = text == null ? "" : text;
   if (cls) { td.className = cls; }
+  if (label) { td.setAttribute("data-label", label); }
   row.appendChild(td);
   return td;
 }
@@ -564,17 +593,23 @@ function markCell(order, kind, printed) {
 }
 function addOrder(order) {
   var tr = document.createElement("tr");
-  var nameCell = cell(tr, order.name);
+  var nameCell = cell(tr, order.name, null, "Order");
   nameCell.className = "name";
-  cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "));
-  cell(tr, order.state);
+  cell(tr, (order.date_order || "").slice(0, 16).replace("T", " "),
+       null, "Date");
+  cell(tr, order.state, null, "State");
   cell(tr, order.amount_total == null ? "" : order.amount_total.toFixed(2),
-       "num");
-  cell(tr, order.partner_id || "");
-  tr.appendChild(markCell(order, "receipt", !!order.printed));
-  tr.appendChild(markCell(order, "internal", !!order.printed_internal));
+       "num", "Total");
+  cell(tr, order.partner_id || "", null, "Customer");
+  var receiptCell = markCell(order, "receipt", !!order.printed);
+  receiptCell.setAttribute("data-label", "Receipt");
+  tr.appendChild(receiptCell);
+  var packingCell = markCell(order, "internal", !!order.printed_internal);
+  packingCell.setAttribute("data-label", "Packing");
+  tr.appendChild(packingCell);
   var actions = document.createElement("td");
   actions.className = "actions";
+  actions.setAttribute("data-label", "Actions");
   var msg = document.createElement("span");
   var detailBtn = document.createElement("button");
   detailBtn.type = "button";
@@ -663,7 +698,7 @@ SETTINGS_PAGE = page("System settings - Odoo Receipt Bridge", """
 <p id="status" class="toast"></p>
 <div class="card">
 <h2>Users</h2>
-<table id="users"><thead><tr><th>Username</th><th>Role</th>
+<table id="users" class="responsive"><thead><tr><th>Username</th><th>Role</th>
 <th>Actions</th></tr></thead><tbody></tbody></table>
 <h3>Add a user</h3>
 <p class="row">
@@ -876,12 +911,15 @@ function loadUsers(users) {
     var tr = document.createElement("tr");
     var td = document.createElement("td");
     td.textContent = u.username;
+    td.setAttribute("data-label", "Username");
     tr.appendChild(td);
     td = document.createElement("td");
     td.textContent = u.role;
+    td.setAttribute("data-label", "Role");
     tr.appendChild(td);
     var actions = document.createElement("td");
     actions.className = "actions";
+    actions.setAttribute("data-label", "Actions");
     var select = document.createElement("select");
     ["admin", "pos"].forEach(function (r) {
       var option = document.createElement("option");
