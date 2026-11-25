@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import auth
 import web_pages
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 DEFAULT_CONFIG_PATH = os.path.join(
     os.path.expanduser("~"), ".config", "odoo-receipt", "config.json")
 DEFAULT_STATE_PATH = os.path.join(
