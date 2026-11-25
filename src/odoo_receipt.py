@@ -1015,11 +1015,13 @@ class StateStore:
                 self.data = data
                 self.data.setdefault("printed", {})
                 self.data.setdefault("printed_internal", {})
+                self.data.setdefault("archived", {})
                 self.data.setdefault("watermark", None)
         except (OSError, ValueError):
             pass
         self.data.setdefault("printed", {})
         self.data.setdefault("printed_internal", {})
+        self.data.setdefault("archived", {})
         self.data.setdefault("watermark", None)
 
     def save(self):
@@ -1067,6 +1069,23 @@ class StateStore:
     def is_printed(self, name, kind="receipt"):
         key = "printed" if kind == "receipt" else "printed_internal"
         return name in (self.data.get(key) or {})
+
+    def set_archived(self, name, archived):
+        """Archive or restore one order from the orders page. Archived
+        orders move to the archived page and leave the main list."""
+        names = self.data.setdefault("archived", {})
+        if archived:
+            names[name] = datetime.now(timezone.utc).isoformat()
+        else:
+            names.pop(name, None)
+        self.data["archived"] = self._prune(names)
+        self.save()
+
+    def is_archived(self, name):
+        return name in (self.data.get("archived") or {})
+
+    def archived_names(self):
+        return sorted((self.data.get("archived") or {}).keys())
 
 
 # --------------------------------------------------------------------------
@@ -1474,12 +1493,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if not session:
             self._redirect("/login")
             return
-        if path == "/":
+        if path in ("/", "/archived"):
             if not self.bridge_client:
                 self._json(503, {"ok": False, "error": "no Odoo config"})
                 return
             html = web_pages.render_page_html(
-                web_pages.orders_page(session["role"]),
+                web_pages.orders_page(session["role"],
+                                       archived=(path == "/archived")),
                 self.bridge_token, session["username"], session["role"])
             self._html(200, html.encode("utf-8"))
             return
@@ -1542,22 +1562,45 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             only_website = self.bridge_cfg.get("only_website")
             if "website" in query:
                 only_website = query["website"][0] not in ("0", "false")
-            try:
-                domain = ecommerce_domain(states or
-                                          self.bridge_cfg.get("states"),
-                                          only_website)
-                orders = fetch_orders(self.bridge_client, domain, limit=limit)
-            except OdooError as exc:
-                self._json(500, {"ok": False, "error": str(exc)})
-                return
+            archived_mode = query.get("archived", ["0"])[0] in ("1", "true",
+                                                                "yes")
             if self.bridge_state is not None:
                 self.bridge_state.load()
                 printed = self.bridge_state.data.get("printed") or {}
                 printed_internal = (self.bridge_state.data.get(
                     "printed_internal") or {})
+                archived = set(self.bridge_state.archived_names())
             else:
                 printed = {}
                 printed_internal = {}
+                archived = set()
+            try:
+                if archived_mode:
+                    # The archived page: only archived orders, regardless
+                    # of the website filter and the configured states.
+                    if not archived:
+                        orders = []
+                    else:
+                        domain = [("name", "in", sorted(archived))]
+                        if states:
+                            domain.append(("state", "in", list(states)))
+                        orders = fetch_orders(self.bridge_client, domain,
+                                              limit=limit)
+                    orders = [o for o in orders
+                              if o.get("name") in archived]
+                else:
+                    domain = ecommerce_domain(states or
+                                              self.bridge_cfg.get("states"),
+                                              only_website)
+                    if archived:
+                        domain.append(("name", "not in", sorted(archived)))
+                    orders = fetch_orders(self.bridge_client, domain,
+                                          limit=limit)
+                    orders = [o for o in orders
+                              if o.get("name") not in archived]
+            except OdooError as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
             self._json(200, {
                 "ok": True,
                 "orders": [{"id": o.get("id"),
@@ -1571,7 +1614,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                                             if o.get("partner_id") else ""),
                             "printed": o.get("name") in printed,
                             "printed_internal": (o.get("name")
-                                                  in printed_internal)}
+                                                  in printed_internal),
+                            "archived": o.get("name") in archived}
                            for o in orders]})
             return
         if path == "/settings":
@@ -1617,7 +1661,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if path == "/settings" or path.startswith("/settings/"):
             self._do_settings(path, payload)
             return
-        if path in ("/print", "/printed"):
+        if path in ("/print", "/printed", "/archived"):
             self._do_print(path, payload)
             return
         self._json(404, {"ok": False, "error": "unknown path"})
@@ -1803,6 +1847,20 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self._json(403, {"ok": False,
                              "error": "bad or missing token"})
             return
+        if path == "/archived":
+            ref = str(payload.get("ref") or payload.get("order") or "").strip()
+            archived = bool(payload.get("archived"))
+            if not ref:
+                self._json(400, {"ok": False, "error": "no order given"})
+                return
+            if self.bridge_state is None:
+                self._json(500, {"ok": False, "error": "no state store"})
+                return
+            self.bridge_state.load()
+            self.bridge_state.set_archived(ref, archived)
+            self._json(200, {"ok": True, "order": ref,
+                             "archived": self.bridge_state.is_archived(ref)})
+            return
         if path == "/printed":
             ref = str(payload.get("ref") or payload.get("order") or "").strip()
             kind = "internal" if payload.get("kind") == "internal" \
@@ -1832,15 +1890,17 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             mode = internal_mode(self.bridge_cfg)
             if "internal" in payload:
                 mode = "only" if payload.get("internal") else "off"
+            kinds = mode_kinds(mode)
             print_with_mode(self.bridge_client, self.bridge_cfg,
                             self.bridge_printer, order, mode)
             if self.bridge_state is not None:
-                self.bridge_state.mark_printed(
-                    order, advance=False, kinds=mode_kinds(mode))
+                self.bridge_state.mark_printed(order, advance=False,
+                                                kinds=kinds)
         except (OdooError, PrinterError) as exc:
             self._json(500, {"ok": False, "error": str(exc)})
             return
-        self._json(200, {"ok": True, "order": order["name"]})
+        self._json(200, {"ok": True, "order": order["name"],
+                         "kinds": list(kinds)})
 
 
 def cmd_serve(cfg, args):

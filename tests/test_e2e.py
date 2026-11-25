@@ -390,6 +390,85 @@ class E2ETest(unittest.TestCase):
                                 redirect=False)
         self.assertEqual(status, 303)
 
+    # ---- archive, view controls --------------------------------------
+
+    def test_27_archive_flow(self):
+        _, _, opener = self.login("boss", "test-admin-password")
+        # nothing archived yet: the archived list is empty
+        status, body = self.get("/orders?archived=1&limit=10", opener=opener,
+                                redirect=False)
+        self.assertEqual(status, 200)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["orders"], [])
+        # archive two orders
+        for ref in ("S00042", "S00043"):
+            status, data = self.post("/archived",
+                                     {"ref": ref, "archived": True},
+                                     opener=opener)
+            self.assertEqual(status, 200)
+            self.assertTrue(data["ok"])
+            self.assertTrue(data["archived"])
+        # the archived list shows exactly those, flagged archived
+        status, body = self.get("/orders?archived=1&limit=10", opener=opener,
+                                redirect=False)
+        data = json.loads(body)
+        self.assertEqual(sorted(o["name"] for o in data["orders"]),
+                         ["S00042", "S00043"])
+        for order in data["orders"]:
+            self.assertTrue(order["archived"])
+        # the main list hides them
+        status, body = self.get("/orders?limit=10", opener=opener,
+                                redirect=False)
+        data = json.loads(body)
+        names = [o["name"] for o in data["orders"]]
+        self.assertNotIn("S00042", names)
+        self.assertNotIn("S00043", names)
+        # unarchive one: it leaves the archived list
+        status, data = self.post("/archived",
+                                 {"ref": "S00042", "archived": False},
+                                 opener=opener)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["archived"])
+        status, body = self.get("/orders?archived=1&limit=10", opener=opener,
+                                redirect=False)
+        data = json.loads(body)
+        self.assertEqual([o["name"] for o in data["orders"]], ["S00043"])
+        # cleanup: unarchive the other one, it is back on the main list
+        self.post("/archived", {"ref": "S00043", "archived": False},
+                  opener=opener)
+        status, body = self.get("/orders?limit=10", opener=opener,
+                                redirect=False)
+        data = json.loads(body)
+        self.assertIn("S00042", [o["name"] for o in data["orders"]])
+
+    def test_28_orders_pages_have_view_controls(self):
+        _, _, opener = self.login("boss", "test-admin-password")
+        status, body = self.get("/", opener=opener, redirect=False)
+        self.assertEqual(status, 200)
+        for needle in ('id="sort"', 'id="hide"', 'id="limit"', "ordersView",
+                       "archiveOrder", "renderOrders", '"/archived"',
+                       "name_asc", "name_desc", "date_asc", "date_desc",
+                       "var ARCHIVED = false;"):
+            self.assertIn(needle, body)
+        status, body = self.get("/archived", opener=opener, redirect=False)
+        self.assertEqual(status, 200)
+        self.assertIn("Archived orders", body)
+        self.assertIn("var ARCHIVED = true;", body)
+        self.assertIn('"/archived"', body)
+
+    def test_29_print_response_lists_kinds(self):
+        _, _, opener = self.login("boss", "test-admin-password")
+        status, data = self.post("/print", {"ref": "S00042"}, opener=opener)
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["order"], "S00042")
+        self.assertEqual(data["kinds"], ["receipt"])
+        status, data = self.post("/print", {"ref": "S00042", "internal": True},
+                                 opener=opener)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["kinds"], ["internal"])
+
 
 def method_number(name):
     digits = "".join(ch for ch in name.split("_")[1] if ch.isdigit())

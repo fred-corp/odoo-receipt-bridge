@@ -177,9 +177,11 @@ def nav_menu(items):
 
 
 NAV_ADMIN = nav_menu([("/", "", "Orders"),
+                     ("/archived", "", "Archived"),
                      ("/settings", "", "System settings"),
                      ("#", "logout", "Log out")])
 NAV_POS = nav_menu([("/", "", "Orders"),
+                   ("/archived", "", "Archived"),
                    ("#", "logout", "Log out")])
 
 
@@ -432,12 +434,13 @@ def render_page_html(html, token, user, role):
                 .replace("__ROLE__", role or ""))
 
 
-def orders_page(role):
+def orders_page(role, archived=False):
     nav = NAV_ADMIN if role == "admin" else NAV_POS
-    return page("Odoo Receipt Bridge", """
+    html = page("Archived orders - Odoo Receipt Bridge" if archived
+                else "Odoo Receipt Bridge", """
 <h1>Odoo Receipt Bridge</h1>
 <p id="status"></p>
-<h2>Recent orders</h2>
+<h2>__HEADING__</h2>
 <p>
 <button id="refresh" type="button">Refresh</button>
 <label class="toggle">Show
@@ -464,6 +467,13 @@ Website only</label>
 <option value="either">receipt or packing printed</option>
 <option value="both">receipt and packing printed</option>
 </select></label>
+<label class="toggle nowrap">Sort
+<select id="sort">
+<option value="date_desc">date, new first</option>
+<option value="date_asc">date, old first</option>
+<option value="name_asc">order no., A-Z</option>
+<option value="name_desc">order no., Z-A</option>
+</select></label>
 <span id="hint">Loading orders ...</span>
 </p>
 <table id="orders" class="responsive">
@@ -482,6 +492,7 @@ Packing list</label>
 var token = "__TOKEN__";
 var user = "__USER__";
 var role = "__ROLE__";
+var ARCHIVED = __ARCHIVED__;
 document.getElementById("who").textContent = user + (role === "admin" ?
   ", admin" : ", POS");
 document.getElementById("logout").addEventListener("click", function () {
@@ -492,12 +503,64 @@ document.getElementById("logout").addEventListener("click", function () {
 var statusEl = document.getElementById("status");
 var tbody = document.querySelector("#orders tbody");
 var hint = document.getElementById("hint");
+function el(id) { return document.getElementById(id); }
 function setStatus(text) { statusEl.textContent = text; }
 function api(path, options) {
   options = options || {};
   options.headers = Object.assign({"X-Print-Token": token},
                                   options.headers || {});
   return fetch(path, options);
+}
+/* The view settings (show, state, website, hide, sort) are remembered in
+   the browser, so the list opens the way it was left. */
+var VIEW_KEY = "ordersView";
+function saveView() {
+  var view = {
+    limit: el("limit").value,
+    state: el("state").value,
+    website: el("website").checked,
+    hide: el("hide").value,
+    sort: el("sort").value
+  };
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(view)); } catch (e) {}
+}
+function loadView() {
+  var view = null;
+  try { view = JSON.parse(localStorage.getItem(VIEW_KEY) || "null"); }
+  catch (e) {}
+  if (!view) { return; }
+  if (view.limit) { el("limit").value = view.limit; }
+  if (typeof view.state === "string") { el("state").value = view.state; }
+  if (typeof view.website === "boolean") {
+    el("website").checked = view.website;
+  }
+  if (view.hide) { el("hide").value = view.hide; }
+  if (view.sort) { el("sort").value = view.sort; }
+}
+var lastOrders = [];
+var rowsByName = {};
+var openDetails = {};
+/* Update the printed mark of one row in place, without reloading the
+   list, so the page keeps its scroll position. Returns true when the
+   order is in the current view. */
+function applyFlag(name, kind, value) {
+  var known = false;
+  lastOrders.forEach(function (order) {
+    if (order.name === name) {
+      if (kind === "receipt") { order.printed = value; }
+      else { order.printed_internal = value; }
+      known = true;
+    }
+  });
+  var row = rowsByName[name];
+  if (row) {
+    var mark = kind === "receipt" ? row.receiptCell : row.packingCell;
+    mark.textContent = value ? "yes" : "no";
+    mark.classList.toggle("done", value);
+    known = true;
+  }
+  if (el("hide").value !== "off") { renderOrders(); }
+  return known;
 }
 function printRef(ref, internal, rowStatus) {
   var where = rowStatus || statusEl;
@@ -509,10 +572,17 @@ function printRef(ref, internal, rowStatus) {
   }).then(function (r) { return r.json(); }).then(function (data) {
     where.textContent = data.ok ? "Printed " + data.order + "."
                                 : "Failed: " + data.error;
-    if (data.ok) { loadOrders(); }
+    if (data.ok) {
+      var kinds = (data.kinds && data.kinds.length) ? data.kinds
+                        : [internal ? "internal" : "receipt"];
+      var known = false;
+      kinds.forEach(function (kind) {
+        if (applyFlag(data.order, kind, true)) { known = true; }
+      });
+      if (!known) { loadOrders(); }
+    }
   }).catch(function (err) { where.textContent = "Failed: " + err; });
 }
-var openDetails = {};
 function toggleDetail(ref, btn, tr) {
   if (openDetails[ref]) {
     var old = openDetails[ref];
@@ -577,7 +647,28 @@ function togglePrinted(ref, kind, now) {
       setStatus("Failed: " + data.error);
       return;
     }
-    loadOrders();
+    applyFlag(ref, kind, data.printed);
+  }).catch(function (err) { setStatus("Failed: " + err); });
+}
+function archiveOrder(name, archived) {
+  setStatus((archived ? "Archiving " : "Restoring ") + name + " ...");
+  api("/archived", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ref: name, archived: archived})
+  }).then(function (r) { return r.json(); }).then(function (data) {
+    if (!data.ok) {
+      setStatus("Failed: " + data.error);
+      return;
+    }
+    setStatus((data.archived ? "Archived " : "Restored ") + data.order + ".");
+    lastOrders = lastOrders.filter(function (order) {
+      return order.name !== name;
+    });
+    var row = rowsByName[name];
+    if (row && row.tr.parentNode) { row.tr.remove(); }
+    delete rowsByName[name];
+    if (!tbody.children.length) { hint.textContent = "No orders to show."; }
   }).catch(function (err) { setStatus("Failed: " + err); });
 }
 function markCell(order, kind, printed) {
@@ -629,26 +720,89 @@ function addOrder(order) {
   packingBtn.addEventListener("click", function () {
     printRef(order.name, true, msg);
   });
+  var archiveBtn = document.createElement("button");
+  archiveBtn.type = "button";
+  archiveBtn.textContent = ARCHIVED ? "Unarchive" : "Archive";
+  archiveBtn.addEventListener("click", function () {
+    archiveOrder(order.name, !ARCHIVED);
+  });
   actions.appendChild(detailBtn);
   actions.appendChild(document.createTextNode(" "));
   actions.appendChild(receiptBtn);
   actions.appendChild(document.createTextNode(" "));
   actions.appendChild(packingBtn);
   actions.appendChild(document.createTextNode(" "));
+  actions.appendChild(archiveBtn);
+  actions.appendChild(document.createTextNode(" "));
   actions.appendChild(msg);
   tr.appendChild(actions);
+  rowsByName[order.name] = {tr: tr, receiptCell: receiptCell,
+                            packingCell: packingCell};
   tbody.appendChild(tr);
+}
+/* Order names like S00042 sort by their numeric part, not as text. */
+function compareName(a, b) {
+  var na = String(a || "");
+  var nb = String(b || "");
+  var ma = /(\d+)$/.exec(na);
+  var mb = /(\d+)$/.exec(nb);
+  if (ma && mb) {
+    var diff = parseInt(ma[1], 10) - parseInt(mb[1], 10);
+    if (diff) { return diff; }
+  }
+  return na < nb ? -1 : (na > nb ? 1 : 0);
+}
+function sortedOrders() {
+  var arr = lastOrders.slice();
+  var sort = el("sort").value;
+  if (sort === "date_asc" || sort === "date_desc") {
+    arr.sort(function (a, b) {
+      var da = a.date_order || "";
+      var db = b.date_order || "";
+      if (da === db) {
+        return sort === "date_asc" ? compareName(a.name, b.name)
+                                   : compareName(b.name, a.name);
+      }
+      var less = da < db;
+      return (sort === "date_asc") === less ? -1 : 1;
+    });
+  } else if (sort === "name_asc" || sort === "name_desc") {
+    arr.sort(function (a, b) {
+      return sort === "name_asc" ? compareName(a.name, b.name)
+                                 : compareName(b.name, a.name);
+    });
+  }
+  return arr;
+}
+/* Render from the cached orders. This runs synchronously once the fetch
+   is done, so the table is never left empty while waiting and the page
+   keeps its scroll position. */
+function renderOrders() {
+  tbody.replaceChildren();
+  rowsByName = {};
+  openDetails = {};
+  var hide = el("hide").value;
+  var shown = 0;
+  sortedOrders().forEach(function (order) {
+    if (hide === "either" && (order.printed || order.printed_internal)) {
+      return;
+    }
+    if (hide === "both" && order.printed && order.printed_internal) {
+      return;
+    }
+    addOrder(order);
+    shown++;
+  });
+  hint.textContent = shown ? "" : "No orders to show.";
 }
 function loadOrders() {
   hint.textContent = "Loading orders ...";
-  tbody.replaceChildren();
   var params = new URLSearchParams();
-  params.set("limit", document.getElementById("limit").value);
-  var state = document.getElementById("state").value;
+  params.set("limit", el("limit").value);
+  var state = el("state").value;
   if (state) { params.set("state", state); }
-  if (!document.getElementById("website").checked) {
-    params.set("website", "0");
-  }
+  if (!el("website").checked) { params.set("website", "0"); }
+  if (ARCHIVED) { params.set("archived", "1"); }
   api("/orders?" + params.toString())
     .then(function (r) { return r.json(); })
     .then(function (data) {
@@ -656,41 +810,38 @@ function loadOrders() {
         hint.textContent = "Failed: " + data.error;
         return;
       }
-      hint.textContent = "";
-      var hide = document.getElementById("hide").value;
-      var shown = 0;
-      (data.orders || []).forEach(function (order) {
-        if (hide == "either" && (order.printed || order.printed_internal)) {
-          return;
-        }
-        if (hide == "both" && order.printed && order.printed_internal) {
-          return;
-        }
-        addOrder(order);
-        shown++;
-      });
-      if (!shown) {
-        hint.textContent = "No orders to show.";
-      }
+      lastOrders = data.orders || [];
+      renderOrders();
     })
     .catch(function (err) { hint.textContent = "Failed: " + err; });
 }
-document.getElementById("refresh").addEventListener("click", loadOrders);
-document.getElementById("limit").addEventListener("change", loadOrders);
-document.getElementById("state").addEventListener("change", loadOrders);
-document.getElementById("website").addEventListener("change", loadOrders);
-document.getElementById("hide").addEventListener("change", loadOrders);
-document.getElementById("print").addEventListener("click", function () {
-  var ref = document.getElementById("ref").value.trim();
+el("refresh").addEventListener("click", loadOrders);
+el("limit").addEventListener("change", function () { saveView(); loadOrders(); });
+el("state").addEventListener("change", function () { saveView(); loadOrders(); });
+el("website").addEventListener("change", function () {
+  saveView(); loadOrders();
+});
+el("hide").addEventListener("change", function () {
+  saveView(); renderOrders();
+});
+el("sort").addEventListener("change", function () {
+  saveView(); renderOrders();
+});
+el("print").addEventListener("click", function () {
+  var ref = el("ref").value.trim();
   if (!ref) {
     setStatus("Type an order name or id first.");
     return;
   }
-  printRef(ref, document.getElementById("internal").checked, null);
+  printRef(ref, el("internal").checked, null);
 });
+loadView();
 loadOrders();
 </script>
 """, nav=nav)
+    return (html.replace("__ARCHIVED__", "true" if archived else "false")
+                .replace("__HEADING__",
+                         "Archived orders" if archived else "Recent orders"))
 
 
 SETTINGS_PAGE = page("System settings - Odoo Receipt Bridge", """

@@ -17,6 +17,17 @@ ORDER = {
     "order_line": [10],
 }
 
+# A small fixture set. Plain list queries return only the first order, so
+# the existing tests keep seeing exactly one order; name-based domain
+# clauses filter the full set.
+ORDERS = [
+    ORDER,
+    dict(ORDER, id=2, name="S00043", date_order="2025-01-03 09:15:00",
+         amount_total=12.0, partner_id=[6, "Bob"]),
+    dict(ORDER, id=3, name="S00041", date_order="2025-01-01 08:30:00",
+         amount_total=7.25, partner_id=[7, "Cleo"]),
+]
+
 LINE = {
     "id": 10,
     "product_id": [3, "Shirt / Blue"],
@@ -59,11 +70,22 @@ class Handler(BaseHTTPRequestHandler):
             inner_args = args[5] if len(args) > 5 else []
             if model == "sale.order" and inner_method == "search_read":
                 domain = inner_args[0] if inner_args else []
-                if domain and domain[0][0] == "name":
-                    order = dict(ORDER, name=domain[0][2])
-                    self._reply({"result": [order]})
+                clause = next((d for d in domain if d[0] == "name"), None)
+                if clause and clause[1] == "=":
+                    found = [o for o in ORDERS if o["name"] == clause[2]]
+                    if not found:
+                        found = [dict(ORDER, name=clause[2])]
+                    self._reply({"result": found})
+                elif clause and clause[1] == "in":
+                    names = set(clause[2])
+                    self._reply({"result": [o for o in ORDERS
+                                            if o["name"] in names]})
+                elif clause and clause[1] == "not in":
+                    names = set(clause[2])
+                    self._reply({"result": [o for o in ORDERS
+                                            if o["name"] not in names]})
                 else:
-                    self._reply({"result": [ORDER]})
+                    self._reply({"result": [ORDERS[0]]})
             elif model == "sale.order.line":
                 self._reply({"result": [LINE]})
             elif model == "product.product":

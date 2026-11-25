@@ -140,10 +140,12 @@ web UI follows the system light/dark theme automatically, with a toggle
 button in the navigation bar to override it (kept in the browser's
 localStorage).
 
-Bridge HTTP endpoints: the pages `GET /` (orders), `GET /login`,
+Bridge HTTP endpoints: the pages `GET /` (orders), `GET /archived`
+(archived orders), `GET /login`,
 `GET /quickstart`, `GET /settings` (admin), and the JSON API
 `GET /health`, `GET /orders`, `GET /order`, `POST /login`, `POST
-/logout`, `POST /print`, `POST /printed`, `POST /quickstart/admin`,
+/logout`, `POST /print`, `POST /printed`, `POST /archived`, `POST
+/quickstart/admin`,
 `POST /quickstart/odoo`, `POST /quickstart/printer`,
 `POST /quickstart/detect`, `POST /settings` (read), `POST
 /settings/printer|odoo|receipt|poll`, `POST /users/add|password|role|
@@ -214,11 +216,23 @@ to make the poll print the order again). The state file stores both in
 `printed` and `printed_internal`.
 
 The Hide dropdown hides orders where the receipt or the packing list was
-printed, or where both were printed.
+printed, or where both were printed. The Sort dropdown orders the list by
+date or by order number, ascending or descending.
 
 Filters for the order state and the number of orders to show, and a
-website-only toggle, work as before. After a print from the page, the
-list refreshes itself.
+website-only toggle, work as before. All of these view settings (show,
+state, website, hide, sort) are remembered in the browser's localStorage,
+so the list opens the way you left it.
+
+Each row also has an Archive button. Archived orders move to the separate
+Archived page (`GET /archived`, also in the navigation menu) and leave the
+main list; there they get an Unarchive button. The archived names are
+stored in the state file under `archived`.
+
+After an action on the page — a print, a status toggle, an archive — the
+affected row updates in place. The list is not rebuilt and the page does
+not scroll back to the top; only the Refresh button, or a change of the
+server-side filters (show, state, website), fetches again.
 
 Each row also has a Details button. It expands the row and shows the
 order items with their quantity, the variant labels (for example
@@ -231,7 +245,17 @@ items with the variant labels as JSON, token required.
 
 Endpoint parameters for `GET /orders`: `state` (comma-separated order
 states, default: the states from the config), `limit` (1 to 500, default
-50), and `website=0` to include orders that do not come from the website.
+50), `website=0` to include orders that do not come from the website, and
+`archived=1` to list only archived orders (ignoring the website filter and
+the configured states). Each order in the response carries `printed`,
+`printed_internal`, and `archived` flags. Archived orders are excluded
+from the normal list.
+
+`POST /archived` takes `{"ref": "S00042", "archived": true}` and returns
+`{"ok": true, "order": "S00042", "archived": true}`. `POST /print` returns
+`{"ok": true, "order": "S00042", "kinds": ["receipt"]}` — the kinds that
+were printed, so the page can mark both status columns when the
+`internal_receipts` setting is `add`.
 
 ## Run the poll as a service (Linux)
 
